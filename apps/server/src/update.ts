@@ -20,6 +20,7 @@ function run(
   file: string,
   args: string[],
   timeoutMs: number,
+  useShell = false,
 ): Promise<GitRun> {
   return new Promise((done) => {
     execFile(
@@ -30,6 +31,9 @@ function run(
         timeout: timeoutMs,
         windowsHide: true,
         maxBuffer: 8 * 1024 * 1024,
+        // Windows 上 npm/npx 是 .cmd，Node 不允许直接 spawn（抛 EINVAL），
+        // 必须交给 shell。参数都是仓库内的相对路径，不含空格与元字符。
+        shell: useShell,
         env: {
           ...process.env,
           // 绝不等待交互输入：没有凭证就立刻失败，而不是把请求挂死
@@ -329,7 +333,7 @@ export async function applyUpdate(): Promise<ApplyResult> {
     files.some((f) => f.endsWith('/package.json'));
 
   if (depsChanged) {
-    const install = await run(bin('npm'), ['install', '--no-audit', '--no-fund'], 600000);
+    const install = await run(bin('npm'), ['install', '--no-audit', '--no-fund'], 600000, true);
     steps.push({
       name: 'npm install',
       ok: install.ok,
@@ -356,6 +360,7 @@ export async function applyUpdate(): Promise<ApplyResult> {
       bin('npx'),
       ['vite', 'build', '--config', 'apps/web/vite.config.ts'],
       300000,
+      true,
     );
     steps.push({
       name: '重建前端',
