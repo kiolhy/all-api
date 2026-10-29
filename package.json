@@ -19,6 +19,7 @@
     "web": "vite --config apps/web/vite.config.ts",
     "typecheck": "tsc -p tsconfig.json",
     "test": "node --test \"packages/core/test/*.test.ts\"",
+    "verify": "node scripts/verify.mjs",
     "mock": "node fixtures/mock-upstream/src/index.ts",
     "seed": "node --env-file-if-exists=.env scripts/seed.mjs"
   },
