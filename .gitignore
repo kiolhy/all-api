@@ -1,0 +1,35 @@
+# ── 依赖与构建产物 ──────────────────────────────────
+node_modules/
+dist/
+apps/web/dist/
+*.tsbuildinfo
+
+# ── 运行时数据（绝对不要提交）────────────────────────
+# 里面有 hub.db（账号哈希、令牌哈希、密钥库密文）
+# 和 master.key（能解开全部上游凭据）
+data/
+data/**
+*.db
+*.db-wal
+*.db-shm
+*.key
+*.sqlite
+*.sqlite3
+
+# ── 环境变量（含 LLM key、网关 key）──────────────────
+.env
+.env.local
+.env.*.local
+
+# ── 日志与临时文件 ──────────────────────────────────
+*.log
+logs/
+tmp/
+.cache/
+
+# ── 编辑器 / 系统 ───────────────────────────────────
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

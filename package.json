@@ -1,0 +1,33 @@
+{
+  "name": "api-asset-hub",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "多平台接口资产中枢：AI 一键整理接口，自有网关转发，供 AI 以 MCP / 对话 / REST 调用",
+  "workspaces": [
+    "packages/*",
+    "apps/*",
+    "fixtures/*"
+  ],
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "scripts": {
+    "dev": "node scripts/dev.mjs",
+    "server": "node --env-file-if-exists=.env apps/server/src/index.ts",
+    "mcp": "node --env-file-if-exists=.env apps/mcp/src/index.ts",
+    "web": "vite --config apps/web/vite.config.ts",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --test \"packages/core/test/*.test.ts\"",
+    "mock": "node fixtures/mock-upstream/src/index.ts",
+    "seed": "node --env-file-if-exists=.env scripts/seed.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.9.2",
+    "vite": "^6.0.7"
+  }
+}
