@@ -39,3 +39,4 @@ export * from './ai/client.ts';
 export * from './chat/agent.ts';
 export * from './gateway/openapi.ts';
 export * from './util/paths.ts';
+export * from './util/version.ts';

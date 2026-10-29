@@ -207,6 +207,24 @@ docs/api.md               REST 契约
 | `npm test` | core 单测 + 端到端（自动拉起假上游） |
 | `npm run typecheck` | `tsc --noEmit` 全量类型检查 |
 
+## 在线更新
+
+设置页「版本与更新」里点**检查更新 / 立即更新**。更新 = `git pull --ff-only`
+→ 必要时 `npm install` → 重建前端 `dist` → **重启进程生效**。
+
+前端产物不入库，所以 pull 之后必须重建，否则页面还是旧的；这两步由接口一次做完。
+
+```bash
+# 手动等价操作
+git pull --ff-only
+npm install            # 只有依赖变了才需要
+npx vite build --config apps/web/vite.config.ts
+# 然后 Ctrl+C 重启服务
+```
+
+更新端点挂在 `/api` 下（要账号登录），网关 `/gw` 碰不到 ——
+不能让调用方更新网关自己。工作区有未提交改动时会拒绝更新。
+
 ## 技术约束（重要）
 
 - Node **24+**，直接跑 `.ts`（原生类型擦除）：**禁用 `enum` / `namespace` / 构造函数参数属性**，类型导入必须 `import type`，相对导入必须带 `.ts` 扩展名。

@@ -9,6 +9,9 @@ import { isAbsolute, resolve } from 'node:path';
  */
 export const PROJECT_ROOT = resolve(import.meta.dirname, '../../../..');
 
+/** 前端构建产物目录。同样锚在项目根，不然换个目录启动就找不到前端包。 */
+export const WEB_DIST = resolve(PROJECT_ROOT, 'apps/web/dist');
+
 /**
  * 把配置里的路径解析成绝对路径。
  *

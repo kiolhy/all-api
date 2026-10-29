@@ -506,3 +506,43 @@ export interface ChatStreamEvent {
   messageId?: string;
   message?: string;
 }
+
+/* ────────────────── 在线更新 ────────────────── */
+
+export interface UpdateState {
+  version: string;
+  isGit: boolean;
+  branch: string;
+  commit: string;
+  shortCommit: string;
+  commitSubject: string;
+  commitDate: string;
+  dirty: boolean;
+  remote: string;
+  upstream: string;
+  hasUpstream: boolean;
+  behind: number;
+  ahead: number;
+  latestCommit: string;
+  latestSubject: string;
+  canUpdate: boolean;
+  message: string;
+  checkedAt: string | null;
+}
+
+export interface UpdateStep {
+  name: string;
+  ok: boolean;
+  detail: string;
+  skipped?: boolean;
+}
+
+export interface ApplyUpdateResult {
+  ok: boolean;
+  restarted: boolean;
+  restartRequired: boolean;
+  before: { commit: string; shortCommit: string };
+  after: { commit: string; shortCommit: string };
+  steps: UpdateStep[];
+  message: string;
+}

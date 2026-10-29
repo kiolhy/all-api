@@ -29,6 +29,8 @@ import type {
   SettingsPatch,
   Stats,
   Tool,
+  ApplyUpdateResult,
+  UpdateState,
 } from './types.ts';
 
 export const SESSION_KEY = 'aah_session';
@@ -510,6 +512,16 @@ export const api = {
     get: () => request<Settings>('GET', '/api/settings'),
     save: (patch: SettingsPatch) =>
       request<{ ok: boolean; llm: Settings['llm'] }>('PUT', '/api/settings', patch),
+  },
+
+  update: {
+    /** 本地信息，不联网 */
+    local: () => request<UpdateState>('GET', '/api/update'),
+    /** 联网检查（服务端 30 秒内复用结果） */
+    check: (force = false) =>
+      request<UpdateState>('GET', `/api/update/check${force ? '?force=1' : ''}`),
+    /** 执行更新：pull → 装依赖 → 重建前端 */
+    apply: () => request<ApplyUpdateResult>('POST', '/api/update/apply', {}),
   },
 
   chat: {

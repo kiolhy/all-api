@@ -2,11 +2,11 @@ import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest }
 import cors from '@fastify/cors';
 import fastifyStatic from '@fastify/static';
 import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
-import { loadConfig, resolveSession } from '@aah/core';
+import { loadConfig, resolveSession, VERSION, WEB_DIST } from '@aah/core';
 import { registerAdminRoutes } from './routes/admin.ts';
 import { bearerToken, registerAuthRoutes } from './routes/auth.ts';
 import { registerGatewayRoutes } from './routes/gateway.ts';
+import { registerUpdateRoutes } from './routes/update.ts';
 
 export function buildApp(): FastifyInstance {
   const cfg = loadConfig();
@@ -61,7 +61,7 @@ export function buildApp(): FastifyInstance {
 
   app.get('/api/health', async () => ({
     ok: true,
-    version: '0.2.0',
+    version: VERSION,
     llm: { enabled: cfg.llm.enabled, model: cfg.llm.model },
     auth: 'account',
   }));
@@ -90,8 +90,9 @@ export function buildApp(): FastifyInstance {
   registerAuthRoutes(app);
   registerAdminRoutes(app);
   registerGatewayRoutes(app);
+  registerUpdateRoutes(app);
 
-  const webDist = resolve(process.cwd(), 'apps/web/dist');
+  const webDist = WEB_DIST;
   if (existsSync(webDist)) {
     app.register(fastifyStatic, { root: webDist, prefix: '/' });
     app.setNotFoundHandler((req, reply) => {

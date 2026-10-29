@@ -263,6 +263,35 @@ PUT /api/settings { llm?: {enabled?,baseUrl?,apiKey?,model?,timeoutMs?} }
 
 `Audit` = `{ id, ts, requestId, channel, toolName, status, ok, latencyMs, upstreamHost, errorCode, reqMeta, respMeta }`
 
+## 在线更新
+
+只挂在 `/api` 下（走账号会话），**网关 `/gw` 碰不到** —— 不能让调用方更新网关自己。
+
+```
+GET  /api/update                        → UpdateState（只读本地，不联网，页面打开就能显示）
+GET  /api/update/check?force=1          → UpdateState（git fetch + 比较，30 秒内复用结果）
+POST /api/update/apply                  → ApplyResult（pull → 装依赖 → 重建前端）
+```
+
+`UpdateState` = `{ version, isGit, branch, commit, shortCommit, commitSubject, commitDate, dirty, remote, upstream, hasUpstream, behind, ahead, latestCommit, latestSubject, canUpdate, message, checkedAt }`
+
+`ApplyResult` = `{ ok, restarted, restartRequired, before, after, steps[], message }`
+，`steps[]` = `{ name, ok, detail, skipped? }`。
+
+行为约定：
+
+| 情况 | 结果 |
+|---|---|
+| 不是 git 仓库 | `isGit:false`，`canUpdate:false`，说明原因 |
+| 工作区有未提交改动 | `canUpdate:false` —— 更新会覆盖本地修改，先提交或还原 |
+| 远程仓库为空 | `"远程还没有 main 分支（仓库是空的？）"` |
+| 远程不可达 / 凭证问题 | `message` 带首行错误，不抛 500 |
+| 已是最新 | `behind:0`，`apply` 只 pull 一次就返回，不重建 |
+| 有更新 | `behind:N`，`apply` 依次 pull → 必要时 `npm install` → `vite build` |
+
+只用 `git pull --ff-only`：出现冲突时留给人处理，不产生本地合并提交。
+`restartRequired:true` 表示**代码已换新但进程还在跑旧代码**，必须重启才生效。
+
 ### 实时流水
 
 概览页用 SSE 订阅，不用轮询：

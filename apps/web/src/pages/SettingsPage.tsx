@@ -6,6 +6,7 @@ import { Field, FormGrid, TextInput, Toggle } from '../components/Field.tsx';
 import { useToast } from '../components/Toast.tsx';
 import { formatNumber } from '../format.ts';
 import { errorMessage, useResource } from '../hooks.ts';
+import type { ApplyUpdateResult, UpdateState } from '../types.ts';
 
 export function SettingsPage() {
   const toast = useToast();
@@ -17,6 +18,63 @@ export function SettingsPage() {
   const [apiKey, setApiKey] = useState('');
   const [timeoutMs, setTimeoutMs] = useState('30000');
   const [saving, setSaving] = useState(false);
+
+  // ── 在线更新 ──
+  const [state, setState] = useState<UpdateState | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [applying, setApplying] = useState(false);
+  const [applyResult, setApplyResult] = useState<ApplyUpdateResult | null>(null);
+
+  const behind = state?.behind ?? 0;
+
+  useEffect(() => {
+    let alive = true;
+    api.update
+      .local()
+      .then((s) => {
+        if (alive) setState(s);
+      })
+      .catch(() => {
+        /* 未登录或端点不可用时静默，不打断设置页其他功能 */
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const doCheck = async () => {
+    setChecking(true);
+    try {
+      const s = await api.update.check(true);
+      setState(s);
+      if (!s.isGit) toast.error('不是 git 仓库，无法在线更新');
+      else if (s.dirty) toast.error('工作区有未提交改动');
+      else if (s.behind > 0) toast.success(`落后 ${s.behind} 个提交，可以更新`);
+      else toast.success('已是最新版本');
+    } catch (err) {
+      toast.error(errorMessage(err));
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  const doApply = async () => {
+    setApplying(true);
+    setApplyResult(null);
+    try {
+      const result = await api.update.apply();
+      setApplyResult(result);
+      if (result.ok) toast.success(result.message);
+      else toast.error(result.message);
+      // 拉完刷新本地状态，让界面反映新提交
+      const fresh = await api.update.local().catch(() => null);
+      if (fresh) setState(fresh);
+    } catch (err) {
+      toast.error(errorMessage(err));
+    } finally {
+      setApplying(false);
+    }
+  };
 
   const egress = settings.data?.egress;
   const llm = settings.data?.llm;
@@ -185,6 +243,120 @@ export function SettingsPage() {
           </div>
           <div className="dim small" style={{ marginTop: 10 }}>
             平台级白名单在「平台」页维护；全局 allowPrivate / 超时 / 体积上限请改服务端 env 后重启。
+          </div>
+        </div>
+      </section>
+      <section className="card">
+        <div className="card-head">
+          <div className="card-title">版本与更新</div>
+          <div className="card-sub">从 git 远程拉取 · 需要重启生效</div>
+        </div>
+        <div className="card-body">
+          <div className="kv-grid">
+            <div className="kv-row">
+              <span className="kv-key">版本</span>
+              <span className="kv-val mono">{state?.version ?? '—'}</span>
+            </div>
+            <div className="kv-row">
+              <span className="kv-key">提交</span>
+              <span className="kv-val mono">
+                {state?.shortCommit ? (
+                  <span title={state.commitSubject}>{state.shortCommit}</span>
+                ) : (
+                  '—'
+                )}
+              </span>
+            </div>
+            <div className="kv-row">
+              <span className="kv-key">分支</span>
+              <span className="kv-val mono">{state?.branch || '—'}</span>
+            </div>
+            <div className="kv-row">
+              <span className="kv-key">远程</span>
+              <span className="kv-val mono small">{state?.remote || '未配置'}</span>
+            </div>
+            <div className="kv-row">
+              <span className="kv-key">状态</span>
+              <span className="kv-val">
+                {checking ? (
+                  <span className="dim">检查中…</span>
+                ) : behind > 0 ? (
+                  <Badge tone="orange">落后 {behind} 个提交</Badge>
+                ) : state?.dirty ? (
+                  <Badge tone="red">有未提交改动</Badge>
+                ) : state?.checkedAt ? (
+                  <Badge tone="green">已是最新</Badge>
+                ) : (
+                  <span className="dim">未检查</span>
+                )}
+              </span>
+            </div>
+          </div>
+
+          {!state?.isGit ? (
+            <div className="notice warn" style={{ marginTop: 10 }}>
+              当前目录不是 git 仓库，没法在线更新。想用这个功能：
+              把项目 `git clone` 下来，再从 clone 出来的目录启动。
+            </div>
+          ) : null}
+
+          {behind > 0 && state?.latestSubject ? (
+            <div className="notice" style={{ marginTop: 10 }}>
+              远程最新：<span className="mono">{state.latestCommit.slice(0, 7)}</span> ·{' '}
+              {state.latestSubject}
+            </div>
+          ) : null}
+
+          {state?.dirty ? (
+            <div className="notice warn" style={{ marginTop: 10 }}>
+              工作区有未提交的改动。更新会覆盖它们，先提交或还原再继续。
+            </div>
+          ) : null}
+
+          {applyResult ? (
+            <div className={`notice ${applyResult.ok ? 'ok' : 'warn'}`} style={{ marginTop: 10 }}>
+              <div style={{ marginBottom: 6 }}>{applyResult.message}</div>
+              {applyResult.steps.map((s) => (
+                <div key={s.name} className="dim small mono">
+                  {s.ok ? '✔' : '✖'} {s.name}
+                  {s.skipped ? '（跳过）' : ''}
+                  {s.detail ? ` — ${s.detail}` : ''}
+                </div>
+              ))}
+            </div>
+          ) : null}
+
+          {applyResult?.restartRequired ? (
+            <div className="notice warn" style={{ marginTop: 10 }}>
+              <b>需要重启才能生效。</b>代码已经换新，但进程里跑的还是旧代码。
+              <div className="mono small" style={{ marginTop: 6 }}>
+                Ctrl+C 停掉服务，再重新启动即可。
+              </div>
+            </div>
+          ) : null}
+
+          <div className="handoff-row" style={{ marginTop: 12 }}>
+            <button
+              type="button"
+              className="btn ghost"
+              disabled={checking || applying || !state?.isGit}
+              onClick={() => void doCheck()}
+            >
+              {checking ? '检查中…' : '检查更新'}
+            </button>
+            <button
+              type="button"
+              className="btn"
+              disabled={applying || checking || behind <= 0 || Boolean(state?.dirty)}
+              onClick={() => void doApply()}
+            >
+              {applying ? '更新中…' : '立即更新'}
+            </button>
+            <span className="dim small">
+              {applying
+                ? '正在拉取并重建前端，可能要一两分钟'
+                : '更新 = git pull + 必要时装依赖 + 重建前端'}
+            </span>
           </div>
         </div>
       </section>

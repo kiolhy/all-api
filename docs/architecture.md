@@ -392,3 +392,39 @@ data/backups/hub-2026-10-29-17-44-49.db
 还原时两个文件放回去才能用。
 
 单机自用没有别的兜底：迁移写坏了、手滑删了，都只能靠这个。`data/` 不要提交到版本库。
+
+## 在线更新：pull 不是全部
+
+这是「源码直跑」的部署形态（Node 直接执行 `.ts`，没有编译产物），所以更新不是换个二进制，
+而是三件事，少一件就会出「更新了但没变化」：
+
+```
+git pull --ff-only  →  必要时 npm install  →  重建前端 dist  →  重启进程
+```
+
+**为什么必须重建前端**：`apps/web/dist/` 在 `.gitignore` 里（构建产物不入库），
+所以 `git pull` 之后页面上跑的仍是旧 bundle。不重建的话，后端新接口前端根本看不见。
+
+**为什么依赖要单独判断**：`npm install` 动辄几分钟。只有 `package.json` /
+`package-lock.json` / 任意子包 `package.json` 在 diff 里出现时才装，否则跳过。
+
+**为什么只允许 fast-forward**：单机部署没有冲突解决流程。`--ff-only` 遇到分叉就失败，
+留一个干净的仓库让人来处理，好过产生一个半合并的提交。
+
+**为什么不自动重启**：进程重启会丢掉正在跑的导入任务。`apply` 返回
+`restartRequired: true`，由用户自己 Ctrl+C 再启动。
+
+### 边界
+
+- 端点挂在 `/api` 下 → 走账号会话；`/gw` 网关碰不到。不能让调用方更新网关自己。
+- `git fetch/pull` 一律带 `GIT_TERMINAL_PROMPT=0`、`GCM_INTERACTIVE=never`、
+  `GIT_ASKPASS=echo` —— 没有凭证时**立刻失败**，而不是把 HTTP 请求挂在那里等输入。
+- 远程为空、不可达、非 git 仓库，都返回结构化 `message` 而不是 500。
+
+### 版本号只有一个来源
+
+根 `package.json` 的 `version`。`VERSION` 常量在 `packages/core/src/util/version.ts`
+读它，`/api/health` 和更新页都从这里取。
+
+以前 `app.ts` 硬编码 `'0.2.0'`、`package.json` 写 `0.1.0` —— 两处对不上，
+在线更新要显示当前版本，不能有第二个真相。

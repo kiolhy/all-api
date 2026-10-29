@@ -1,6 +1,6 @@
 {
   "name": "api-asset-hub",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "description": "多平台接口资产中枢：AI 一键整理接口，自有网关转发，供 AI 以 MCP / 对话 / REST 调用",
