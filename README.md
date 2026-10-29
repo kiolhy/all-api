@@ -114,10 +114,20 @@ curl -X POST http://127.0.0.1:8778/gw/v1/call \
 
 | 输入 | 处理 |
 |---|---|
-| `curl` | 词法解析（`-X -H -d --data-raw --data-urlencode -F -u -b`、反斜杠续行、单双引号、`$'...'`、一次多条） |
-| `HAR` | 过滤静态资源，按 host 分组，同 key 去重 |
-| `OpenAPI` | JSON/YAML 直接映射（含 `$ref` 浅解析、servers 前缀、requestBody），质量最高，跳过 LLM |
+| `curl` | 词法解析（`-X -H -d --data-raw --data-urlencode -F -u -b`、反斜杠续行、单双引号、`$'...'`、**一次多条**） |
+| `HAR` | 过滤静态资源，按 host 分组，同 key 去重（整段抓包一次进） |
+| `OpenAPI` | JSON/YAML 直接映射（含 `$ref` 浅解析、servers 前缀、requestBody），质量最高，跳过 LLM（一个文档的 path 全部进） |
 | 文档文本 | LLM 抽取接口清单 |
+
+**一次能进多少个接口**：没有数量上限，取决于输入里有多少条请求。
+- 多条 `curl` 直接叠在一个粘贴框里，按行首 `curl`/`wget` 切块（`splitCurlBlocks`）
+- 一份 HAR 是整个浏览会话的所有请求
+- 一份 OpenAPI 是所有 path × method
+
+跑完得到候选列表，可以逐个确认，也可以「发布全部」一次性入库。
+
+**重复导入是幂等的**：同一份文档导入第二次，接口按「方法 + 归一化路径 + 参数集合」判重，
+内容一致直接跳过（`duplicates`），不再产生 `_2`、`_3` 这种后缀漂移。
 
 归一化阶段做的事：
 

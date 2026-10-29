@@ -309,8 +309,20 @@ export async function runImport(opts: ImportOptions): Promise<ImportOutcome> {
     for (const d of drafts) {
       const platformId = platformIdBySlug.get(d.platformSlug)!;
       const input: EndpointInput = { ...d.endpoint };
-      input.slug = uniqueSlug(platformId, input.slug);
+
+      // 先按草稿 slug 分类，再决定要不要去重。
+      // 以前这里先 uniqueSlug 再 classify，导致重复导入同一份文档时
+      // 自己的 slug 被当成冲突 → 顶成 _2，下次 _3，工具名跟着一路漂。
       const cls = classify(platformId, input, batchSeen);
+
+      if (cls.diffKind === 'modified' && cls.targetEndpointId) {
+        // 更新已有接口：slug 按草稿来，但排除自己再判重。
+        // 这样重复导入保持稳定，历史上被顶成 _2 的也能修回原名。
+        input.slug = uniqueSlug(platformId, input.slug, cls.targetEndpointId);
+      } else if (cls.diffKind === 'new') {
+        input.slug = uniqueSlug(platformId, input.slug);
+      }
+
       batchSeen.set(`${input.method} ${input.pathTemplate}`, input.slug);
 
       if (cls.diffKind === 'duplicate') {

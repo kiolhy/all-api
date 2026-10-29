@@ -56,7 +56,14 @@ check('令牌列表', Array.isArray(keys), `${keys.length} 个`);
 check('审计列表', Array.isArray(audits), `${audits.length} 条`);
 check('设置可读', Boolean(settings.egress), `allowPrivate=${settings.egress?.allowPrivate}`);
 
-const t0 = tools[0];
+// 库里有多个工具时别盲取 tools[0]：不同接口入参不同，随便拿一个可能不吃 page
+const t0 =
+  tools.find((t) => t.inputSchema?.properties?.page) ??
+  tools.find((t) => !(t.inputSchema?.required?.length ?? 0)) ??
+  tools[0];
+const hasPage = Boolean(t0.inputSchema?.properties?.page);
+const args = hasPage ? { page: 1 } : {};
+const qs = hasPage ? '?page=1' : '';
 check('工具名不暴露上游', !/8899|127\.0\.0\.1/.test(t0.name), t0.name);
 check('工具含 inputSchema', Boolean(t0.inputSchema?.properties !== undefined));
 
@@ -75,14 +82,14 @@ check('网关工具清单非空', (Array.isArray(gwToolsBody) ? gwToolsBody.leng
 
 const call = await j(await fetch(`${BASE}/gw/v1/call`, {
   method: 'POST', headers: GK,
-  body: JSON.stringify({ tool: t0.name, args: { page: 1 } }),
+  body: JSON.stringify({ tool: t0.name, args }),
 }));
 check('按工具名调用成功', call.ok === true, `status=${call.ok}`);
 check('返回有 data', 'data' in call);
 check('返回有 meta.requestId', Boolean(call.meta?.requestId));
 check('console 通道不泄露上游 host', !call.meta?.upstreamHost, JSON.stringify(call.meta?.upstreamHost ?? ''));
 
-const direct = await fetch(`${BASE}/gw/v1/${t0.name}?page=1`, { headers: { 'x-api-key': created.key } });
+const direct = await fetch(`${BASE}/gw/v1/${t0.name}${qs}`, { headers: { 'x-api-key': created.key } });
 check('直连路径调用', direct.status === 200, String(direct.status));
 await direct.text();
 
