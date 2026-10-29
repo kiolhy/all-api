@@ -269,9 +269,26 @@ export async function applyUpdate(): Promise<ApplyResult> {
     };
   }
 
-  const pull = await git(['pull', '--ff-only'], 120000);
+  if (!before.branch || before.branch === 'HEAD') {
+    return {
+      ok: false,
+      restarted: false,
+      restartRequired: false,
+      before: { commit: before.commit, shortCommit: before.shortCommit },
+      after: { commit: before.commit, shortCommit: before.shortCommit },
+      steps: [{ name: '检查分支', ok: false, detail: '当前处于游离 HEAD，先切到一个分支再更新' }],
+      message: '无法更新：不在任何分支上',
+    };
+  }
+
+  // 没有上游跟踪时 `git pull` 会直接报 "no tracking information"，
+  // 必须显式给出 remote 和分支
+  const pullArgs = before.hasUpstream
+    ? ['pull', '--ff-only']
+    : ['pull', '--ff-only', 'origin', before.branch];
+  const pull = await git(pullArgs, 120000);
   steps.push({
-    name: 'git pull --ff-only',
+    name: `git ${pullArgs.join(' ')}`,
     ok: pull.ok,
     detail: pull.ok ? '' : pull.err.split('\n').slice(0, 4).join(' '),
   });
