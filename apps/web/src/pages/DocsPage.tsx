@@ -8,6 +8,7 @@ import {
   ERROR_ROWS,
   buildHandoffPack,
   exampleArgs,
+  looksLikeUpstreamName,
   looksLikeUpstreamPath,
   schemaOf,
 } from '../handoff.ts';
@@ -120,6 +121,12 @@ export function DocsPage() {
   const leakyCount = useMemo(
     () =>
       published.filter((t) => looksLikeUpstreamPath(t.title) || looksLikeUpstreamPath(t.description)).length,
+    [published],
+  );
+
+  // 名字是调用凭据，接入包裁不掉 —— 只能靠改名
+  const leakyNameCount = useMemo(
+    () => published.filter((t) => looksLikeUpstreamName(t.name)).length,
     [published],
   );
 
@@ -265,6 +272,14 @@ export function DocsPage() {
             <div className="notice warn">
               还没有令牌，接入包里是 <code className="mono">&lt;把令牌粘这里&gt;</code> 占位符。
               点上面的「新建一个令牌」就会自动填进去。
+            </div>
+          ) : null}
+          {leakyNameCount > 0 ? (
+            <div className="notice warn">
+              有 <b>{leakyNameCount}</b> 个工具<strong>名字</strong>里带着上游痕迹（IP、端口或{' '}
+              <code className="mono">/api/</code> 路径）。
+              名字是调用凭据，接入包没法裁掉 —— 对方看到名字就知道原始接口在哪。
+              去「工具」页逐个改成业务含义，改完这里会自动跟着变。
             </div>
           ) : null}
           {leakyCount > 0 ? (

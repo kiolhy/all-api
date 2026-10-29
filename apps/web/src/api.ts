@@ -453,6 +453,7 @@ export const api = {
     update: (
       id: string,
       patch: Partial<{
+        name: string;
         enabled: boolean;
         title: string;
         description: string;

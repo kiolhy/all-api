@@ -8,6 +8,7 @@ import { Modal } from '../components/Modal.tsx';
 import { DataTable } from '../components/Table.tsx';
 import type { Column } from '../components/Table.tsx';
 import { useToast } from '../components/Toast.tsx';
+import { looksLikeUpstreamName } from '../handoff.ts';
 import { copyText, formatTime } from '../format.ts';
 import { bumpData, errorMessage, useDataRev, useResource } from '../hooks.ts';
 import type { Tool } from '../types.ts';
@@ -44,17 +45,19 @@ export function ToolsPage() {
   const [cacheDraft, setCacheDraft] = useState<Record<string, string>>({});
 
   const [editing, setEditing] = useState<Tool | null>(null);
-  const [title, setTitle] = useState('');
-  const [description, setDescription] = useState('');
+  const [name, setName] = useState('');
+  const [title, setTitle] = useState('');  const [description, setDescription] = useState('');
   const [cacheTtl, setCacheTtl] = useState('0');
   const [namespace, setNamespace] = useState('');
   const [saving, setSaving] = useState(false);
+  const leakyName = looksLikeUpstreamName(name.trim());
 
   const [mcpOpen, setMcpOpen] = useState(false);
   const mcpJson = buildMcpConfig();
 
   const openEdit = (tool: Tool) => {
     setEditing(tool);
+    setName(tool.name ?? '');
     setTitle(tool.title ?? '');
     setDescription(tool.description ?? '');
     setCacheTtl(String(tool.cacheTtl ?? 0));
@@ -82,15 +85,21 @@ export function ToolsPage() {
       toast.error('cacheTtl 需要是 ≥0 的整数');
       return;
     }
+    const nextName = name.trim();
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(nextName)) {
+      toast.error('对外名字只能用字母、数字、下划线、短横线，长度 1–64');
+      return;
+    }
     setSaving(true);
     try {
       await api.tools.update(editing.id, {
+        name: nextName,
         title,
         description,
         cacheTtl: Math.round(ttl),
         namespace,
       });
-      toast.success(`${editing.name} 已保存`);
+      toast.success(`${nextName} 已保存`);
       setEditing(null);
       tools.reload();
       bumpData();
@@ -326,6 +335,19 @@ export function ToolsPage() {
         }
       >
         <FormGrid>
+          <Field
+            label="对外名字"
+            span
+            hint="调用方唯一看得到的标识。别写上游域名、路径或端口 —— 网关把地址掩了，名字里带出来等于白掩"
+          >
+            <TextInput mono value={name} onChange={(event) => setName(event.target.value)} placeholder="query_orders" />
+          </Field>
+          {leakyName ? (
+            <div className="notice warn" style={{ gridColumn: '1 / -1' }}>
+              这个名字里带着上游痕迹（IP、端口或 <code className="mono">/api/</code> 路径）。
+              对方拿到名字就知道原始接口在哪了，建议改成业务含义，比如 <code className="mono">query_orders</code>。
+            </div>
+          ) : null}
           <Field label="标题" span>
             <TextInput value={title} onChange={(event) => setTitle(event.target.value)} />
           </Field>

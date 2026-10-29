@@ -68,6 +68,26 @@ export const ERROR_ROWS: Array<{ code: string; status: string; desc: string }> =
 
 /* ────────────────────────── 接入包 ────────────────────────── */
 
+/**
+ * 工具名里是否带着上游痕迹。
+ *
+ * 网关把域名掩掉了，但工具名是调用方唯一看得到的标识 ——
+ * `x127_8899__get_api_v1_orders` 这种等于把上游 host、端口、路径全写出来了。
+ * 接入包没法「裁掉」名字（那是调用凭据），只能靠改名，所以要单独提示。
+ */
+export function looksLikeUpstreamName(name: string): boolean {
+  if (!name) return false;
+  // 中性前缀 api__ 本身是安全的，只看它后面的部分
+  const s = name.toLowerCase().replace(/^api__/, '');
+  return (
+    /(^|_)(\d{1,3}_){2,}\d{1,3}(_|$)/.test(s) || // IP 片段：127_0_0_1
+    /(^|_)\d{3,5}(_|$)/.test(s) || // 端口：8899
+    /(^|_)api(_|$)/.test(s) || // 路径里的 /api/
+    /(^|_)v\d+(_|$)/.test(s) || // 版本段 /v1/
+    /\/api\//.test(s)
+  );
+}
+
 export type PackOptions = {
   baseUrl: string;
   key: string;

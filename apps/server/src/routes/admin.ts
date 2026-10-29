@@ -277,15 +277,30 @@ export function registerAdminRoutes(app: FastifyInstance): void {
     const tool = tools.get(id);
     if (!tool) throw bad('工具不存在', 'not_found');
     const body = (req.body ?? {}) as {
+      name?: string;
       enabled?: boolean;
       title?: string;
       description?: string;
       cacheTtl?: number;
       namespace?: string;
     };
+
+    // 工具名是调用方唯一看得到的标识，必须能改 ——
+    // 自动生成的兜底名可能带着上游痕迹，改不了就只能删了重发。
+    let name = tool.name;
+    if (body.name !== undefined) {
+      const next = body.name.trim();
+      if (!/^[A-Za-z0-9_-]{1,64}$/.test(next)) {
+        throw bad('工具名只能用字母、数字、下划线、短横线，长度 1–64', 'invalid_name');
+      }
+      const taken = tools.byName(next);
+      if (taken && taken.id !== tool.id) throw bad(`名字 ${next} 已被其他工具占用`, 'name_taken');
+      name = next;
+    }
+
     return tools.upsert({
       endpointId: tool.endpointId,
-      name: tool.name,
+      name,
       title: body.title ?? tool.title,
       description: body.description ?? tool.description,
       inputSchema: tool.inputSchema,
@@ -303,9 +318,20 @@ export function registerAdminRoutes(app: FastifyInstance): void {
       const platform = platforms.get(ep.platformId);
       const compiled = compileTool(ep, { platformName: platform?.name });
       const existing = tools.byEndpoint(ep.id);
+
+      // 用户改过「对外名」就以它为准；没改过则保留工具页里手动改的名字
+      let name = (ep.publicName ?? '').trim() ? compiled.name : (existing?.name ?? compiled.name);
+      let i = 2;
+      while (true) {
+        const clash = tools.byName(name);
+        if (!clash || clash.endpointId === ep.id) break;
+        name = `${compiled.name}_${i}`.slice(0, 64);
+        i += 1;
+      }
+
       tools.upsert({
         endpointId: ep.id,
-        name: existing?.name ?? compiled.name,
+        name,
         title: compiled.title,
         description: compiled.description,
         inputSchema: compiled.inputSchema,

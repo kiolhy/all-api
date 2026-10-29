@@ -169,10 +169,13 @@ test('自省：两个 Key 看到的接口集合不同', () => {
   assert.ok(bSlugs.includes('everyone'));
 });
 
-test('自省：未配对外名时工具名回退，仍可识别', () => {
+test('自省：未配对外名时用中性前缀，不带上游 host', () => {
   const keyId = newKey('k5');
   makeEndpoint({ slug: 'no_alias' });
   const tool = tools.byEndpoint(endpoints.list().find((e) => e.slug === 'no_alias')!.id);
   assert.ok(tool);
-  assert.equal(tool.name, 'demo__no_alias');
+  // 平台 slug 由 host 推导（demo / x127_8899），不能进对外工具名。
+  // 不知道用户起的中文名时一律用 api 前缀，名字由用户在工具页改。
+  assert.equal(tool.name, 'api__no_alias');
+  assert.ok(!tool.name.includes('8899'));
 });

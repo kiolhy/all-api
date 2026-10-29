@@ -85,8 +85,23 @@ function fakeEndpoint(over: Record<string, unknown> = {}) {
   } as never;
 }
 
-test('没配对外名时回退到 平台__接口', () => {
-  assert.equal(resolveToolName(fakeEndpoint()), 'demo__get_api_v1_users_user_id');
+test('没配对外名时用中性前缀，不带上游 host', () => {
+  // platformSlug 是 host 推导出来的（demo / x127_8899），不能进对外工具名
+  assert.equal(resolveToolName(fakeEndpoint()), 'api__get_api_v1_users_user_id');
+});
+
+test('平台名像域名/IP 时不进工具名', () => {
+  for (const host of ['127.0.0.1:8899', 'api.github.com', 'http://x.io', 'example.org', '8899']) {
+    const name = resolveToolName(fakeEndpoint(), { platformName: host });
+    assert.ok(name.startsWith('api__'), `${host} → ${name}`);
+    assert.ok(!name.includes('127'), name);
+    assert.ok(!name.includes('github'), name);
+  }
+});
+
+test('平台名是人起的就用它', () => {
+  const name = resolveToolName(fakeEndpoint(), { platformName: 'orders' });
+  assert.equal(name, 'orders__get_api_v1_users_user_id');
 });
 
 test('配了对外名就用它，与上游路径无关', () => {

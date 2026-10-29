@@ -23,14 +23,43 @@ export function toolName(platformSlug: string, endpointSlug: string): string {
 }
 
 /**
- * 对外工具名。
- * 配了 publicName 就用它（与上游路径无关，不泄露上游结构）；
- * 没配才回退到「平台__接口」。
+ * 像域名 / IP / 带端口 / URL 的字符串。
+ *
+ * 平台名默认是从上游 host 推导的（`127.0.0.1:8899`、`api.github.com`），
+ * 直接拿去拼工具名等于把上游地址写进对外接口名里。
  */
-export function resolveToolName(endpoint: EndpointRecord): string {
+function looksHostish(raw: string): boolean {
+  const s = raw.trim();
+  if (!s) return false;
+  return (
+    /^https?:\/\//i.test(s) ||
+    /^(\d{1,3}\.){3}\d{1,3}(:\d{2,5})?$/.test(s) ||
+    /^[a-z0-9-]+(\.[a-z0-9-]+)+$/i.test(s) ||
+    /:\d{2,5}$/.test(s) ||
+    /^\d+$/.test(s)
+  );
+}
+
+/**
+ * 对外工具名。
+ *
+ * 优先级：
+ * 1. `endpoint.publicName` —— 用户自己起的名，与上游无关
+ * 2. `平台名__接口slug` —— 但平台名像 host 时改用中性前缀 `api`
+ *
+ * 绝不把上游 host/端口写进名字：网关把地址掩掉了，
+ * 名字里再带一个 `x127_8899` 就等于白掩。
+ */
+export function resolveToolName(
+  endpoint: EndpointRecord,
+  opts: { platformName?: string } = {},
+): string {
   const custom = (endpoint.publicName ?? '').trim();
   if (custom) return custom.slice(0, MAX_NAME);
-  return toolName(endpoint.platformSlug, endpoint.slug);
+
+  const platformName = (opts.platformName ?? '').trim();
+  const head = platformName && !looksHostish(platformName) ? slugify(platformName, 'api') : 'api';
+  return toolName(head, endpoint.slug);
 }
 
 function jsonTypeOf(param: EndpointRecord['params'][number]): Record<string, unknown> {
@@ -103,8 +132,8 @@ export function compileTool(endpoint: EndpointRecord, opts: { platformName?: str
   if (secretParams.length) descParts.push('鉴权由网关自动注入，无需传 token。');
 
   return {
-    name: resolveToolName(endpoint),
-    title: endpoint.summary?.trim() || resolveToolName(endpoint),
+    name: resolveToolName(endpoint, opts),
+    title: endpoint.summary?.trim() || resolveToolName(endpoint, opts),
     description: descParts.join('\n'),
     inputSchema,
     annotations: {

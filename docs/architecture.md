@@ -193,6 +193,36 @@ audit.append(...)  →  auditListeners  →  SSE  →  概览页
 生成器抽在 `apps/web/src/handoff.ts`（纯函数、无 React 依赖），
 就是为了能拿真数据在 Node 里直接跑测试：生成 → 照着包里的话术真的调一次网关 → 断言不泄露。
 
+#### 工具名也是泄露面
+
+`title` / `description` 能裁，**工具名裁不掉** —— 它是调用凭据，必须原样出现在接入包里。
+
+早期兜底名是 `平台slug__接口slug`，而平台 slug 由上游 host 推导，于是：
+
+```
+x127_8899__get_api_v1_orders      ← host、端口、路径全在里面
+github__get_users_repos           ← 连是哪个服务商都告诉对方了
+```
+
+网关把域名掩了，名字又把地址写回去了。
+
+现在 `resolveToolName()`：
+
+1. `endpoint.publicName` 优先（用户自己起的名）
+2. 否则 `平台名__接口slug`，但**平台名像域名/IP/带端口时改用中性前缀 `api`**
+   （`looksHostish()` 判断），得到 `api__get_api_v1_orders`
+3. 平台名是人起的（如 `orders`）才用它
+
+配套两件事：
+
+- `PATCH /api/tools/:id` 支持 `name`（校验 `[A-Za-z0-9_-]{1,64}` + 唯一），
+  工具页编辑弹窗里能直接改。以前 `name: tool.name` 是锁死的，改不掉只能删了重发。
+- `POST /api/tools/rebuild` 在 `publicName` 有值时以它为准，让接口页改的名能同步到工具。
+
+前端 `looksLikeUpstreamName()` 标出仍带上游痕迹的名字，工具编辑弹窗和「交给其他 AI」页都会提示。
+它抓的是 IP 片段、端口、`/api/`、`/v1/` —— 服务商名（`github_users`）抓不出来，
+那种只能靠人自己别这么起。
+
 #### 令牌进不去服务端
 
 接入包在**浏览器里**拼，令牌不会发给任何接口。已有令牌的明文只在创建时显示过一次
