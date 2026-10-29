@@ -420,6 +420,9 @@ git pull --ff-only  →  必要时 npm install  →  重建前端 dist  →  重
 - `git fetch/pull` 一律带 `GIT_TERMINAL_PROMPT=0`、`GCM_INTERACTIVE=never`、
   `GIT_ASKPASS=echo` —— 没有凭证时**立刻失败**，而不是把 HTTP 请求挂在那里等输入。
 - 远程为空、不可达、非 git 仓库，都返回结构化 `message` 而不是 500。
+- **Windows 上 `npm`/`npx` 是 `.cmd`**，Node 不允许直接 spawn（抛 `EINVAL`），
+  必须带 `shell: true`。否则表现为「代码已经 pull 成功，但接口 500」——
+  最难判断的一种失败：仓库变了，页面没变。
 
 ### 版本号只有一个来源
 
