@@ -81,3 +81,32 @@ test('第三次导入仍然稳定，工具名不出现 _2 后缀', async () => {
   assert.deepEqual(names, ['idem_demo__get_user', 'idem_demo__list_orders'], names.join(', '));
   assert.ok(!names.some((n) => /_\d+$/.test(n)), '工具名不该带 _2 之类的去重后缀');
 });
+
+/**
+ * 批次内冲突。
+ *
+ * classify 用 dedupeKey(input)（形如 `GET /api/v1/x ?`）查 batchSeen，
+ * 但 pipeline 当初存的是 `${method} ${pathTemplate}` —— 两边键格式不同，
+ * 冲突分支永远进不去，同一批里两条一样的请求会被当成两个新接口。
+ */
+test('同一批里两条相同请求：一个 new，一个 conflict', async () => {
+  resetDbForTests();
+  const text = [
+    "curl 'http://127.0.0.1:8899/api/v1/slow'",
+    "curl 'http://127.0.0.1:8899/api/v1/slow'",
+  ].join('\n');
+
+  const result = await runImport({
+    text,
+    kind: 'curl',
+    useAi: false,
+    autoPublish: false,
+    probeUpstream: false,
+  });
+
+  assert.equal(result.stats.parsed, 2);
+  assert.equal(result.stats.conflicts, 1, '批次内重复必须被判成 conflict');
+  assert.equal(result.stats.candidates, 2);
+  // 冲突的不会入库，只有一个新接口
+  assert.equal(endpoints.list().length, 0, 'autoPublish=false 时不该落库');
+});

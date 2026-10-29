@@ -4,6 +4,7 @@ import { Badge, DiffBadge, MethodBadge } from '../components/Badge.tsx';
 import { Empty, ErrorBox, Loading } from '../components/Empty.tsx';
 import { Checkbox, Field, Select, TextArea } from '../components/Field.tsx';
 import { JsonView } from '../components/JsonView.tsx';
+import { Modal } from '../components/Modal.tsx';
 import { useToast } from '../components/Toast.tsx';
 import { formatTime } from '../format.ts';
 import { bumpData, errorMessage, useDataRev, useResource } from '../hooks.ts';
@@ -46,6 +47,7 @@ export function ImportPage() {
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [busyCandidate, setBusyCandidate] = useState('');
   const [acceptingAll, setAcceptingAll] = useState(false);
+  const [confirmingAll, setConfirmingAll] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [siteFilter, setSiteFilter] = useState('');
 
@@ -59,6 +61,26 @@ export function ImportPage() {
   };
 
   const activeJobId = String(job?.id ?? result?.jobId ?? trackedId ?? '');
+
+  /**
+   * 「全部采纳」会直接写库 + 编译工具，不再逐条确认。
+   * 点之前先把账算清楚：新建几个、更新几个、跳过几个。
+   * 判重口径跟服务端 accept-all 一致：只处理 pending，且跳过 conflict / duplicate。
+   */
+  const bulkPreview = useMemo(() => {
+    const pending = candidates.filter((c) => c.decision === 'pending');
+    return {
+      total: candidates.length,
+      pending: pending.length,
+      create: pending.filter((c) => c.diffKind === 'new').length,
+      update: pending.filter((c) => c.diffKind === 'modified').length,
+      conflict: pending.filter((c) => c.diffKind === 'conflict').length,
+      duplicate: pending.filter((c) => c.diffKind === 'duplicate').length,
+      handled: candidates.length - pending.length,
+      // 导入阶段就被判重、压根没进候选列表的那些
+      skippedAtImport: job?.stats?.duplicates ?? 0,
+    };
+  }, [candidates, job]);
 
   const loadJob = async (jobId: string) => {
     setLoadError(null);
@@ -211,6 +233,7 @@ export function ImportPage() {
 
   const acceptAll = async () => {
     if (!activeJobId) return;
+    setConfirmingAll(false);
     setAcceptingAll(true);
     try {
       const res = await api.import.acceptAll(activeJobId);
@@ -363,10 +386,10 @@ export function ImportPage() {
               <button
                 type="button"
                 className="btn sm"
-                onClick={() => void acceptAll()}
-                disabled={!activeJobId || acceptingAll || candidates.length === 0}
+                onClick={() => setConfirmingAll(true)}
+                disabled={!activeJobId || acceptingAll || bulkPreview.pending === 0}
               >
-                {acceptingAll ? '采纳中…' : '全部采纳'}
+                {acceptingAll ? '采纳中…' : `全部采纳${bulkPreview.pending ? ` (${bulkPreview.pending})` : ''}`}
               </button>
               <button
                 type="button"
@@ -570,6 +593,65 @@ export function ImportPage() {
           </div>
         </section>
       </div>
+
+      <Modal
+        open={confirmingAll}
+        title="确认全部采纳"
+        subtitle="这一步会直接写库并编译工具，不再逐条确认"
+        onClose={() => setConfirmingAll(false)}
+        width={480}
+        footer={
+          <>
+            <button type="button" className="btn ghost" onClick={() => setConfirmingAll(false)} disabled={acceptingAll}>
+              取消
+            </button>
+            <button
+              type="button"
+              className="btn primary"
+              onClick={() => void acceptAll()}
+              disabled={acceptingAll || bulkPreview.create + bulkPreview.update === 0}
+            >
+              {acceptingAll
+                ? '采纳中…'
+                : `确认发布 ${bulkPreview.create + bulkPreview.update} 个`}
+            </button>
+          </>
+        }
+      >
+        <div className="kv-grid">
+          <div className="kv-row">
+            <span className="kv-key">将新建</span>
+            <span className="kv-val">{bulkPreview.create} 个接口</span>
+          </div>
+          <div className="kv-row">
+            <span className="kv-key">将更新</span>
+            <span className="kv-val">{bulkPreview.update} 个接口</span>
+          </div>
+          <div className="kv-row">
+            <span className="kv-key">跳过 · 批次内冲突</span>
+            <span className="kv-val">{bulkPreview.conflict} 个</span>
+          </div>
+          <div className="kv-row">
+            <span className="kv-key">跳过 · 重复</span>
+            <span className="kv-val">{bulkPreview.duplicate + bulkPreview.skippedAtImport} 个</span>
+          </div>
+          <div className="kv-row">
+            <span className="kv-key">已处理过</span>
+            <span className="kv-val">{bulkPreview.handled} 个</span>
+          </div>
+        </div>
+        {bulkPreview.conflict > 0 ? (
+          <div className="notice warn">
+            有 {bulkPreview.conflict} 个接口和本批次里其他接口撞了（方法 + 路径 + 参数相同），
+            会被跳过。要保留的话先回去逐条处理。
+          </div>
+        ) : null}
+        {bulkPreview.create + bulkPreview.update === 0 ? (
+          <div className="notice warn">
+            没有可发布的接口 —— 全部被判重或已处理过。重复导入同一份文档时这是正常的。
+          </div>
+        ) : null}
+      </Modal>
     </>
   );
 }

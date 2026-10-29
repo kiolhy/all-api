@@ -12,7 +12,7 @@ import { extractDraftsFromText } from './enrich.ts';
 import { runAgents } from '../agents/index.ts';
 import type { StepPatch } from '../agents/index.ts';
 import { fetchSiteInfo, hostToName } from './site.ts';
-import { classify, uniqueSlug } from './dedupe.ts';
+import { classify, dedupeKey, uniqueSlug } from './dedupe.ts';
 import { compileTool } from '../tools/compile.ts';
 
 export type ImportOptions = {
@@ -323,7 +323,10 @@ export async function runImport(opts: ImportOptions): Promise<ImportOutcome> {
         input.slug = uniqueSlug(platformId, input.slug);
       }
 
-      batchSeen.set(`${input.method} ${input.pathTemplate}`, input.slug);
+      // 键必须和 classify 里查的完全一致（dedupeKey 带 ` ?params` 尾巴）。
+      // 以前这里存的是 `${method} ${pathTemplate}`，跟查的键对不上，
+      // 于是批次内冲突永远检测不到，同一批里两条一样的请求会被当成两个新接口。
+      batchSeen.set(dedupeKey(input), input.slug);
 
       if (cls.diffKind === 'duplicate') {
         stats.duplicates += 1;
