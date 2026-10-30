@@ -886,6 +886,18 @@ a {
   white-space: nowrap;
 }
 
+/* 未提交改动清单：限高可滚动，不撑破卡片 */
+.dirty-list {
+  max-height: 180px;
+  overflow: auto;
+  padding: 8px 10px;
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  border: 1px solid var(--border-soft);
+  line-height: 1.7;
+  white-space: pre;
+}
+
 /* 开关请求中：只做视觉提示，不禁用点击 */
 .toggle-busy {
   opacity: 0.6;

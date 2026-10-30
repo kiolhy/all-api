@@ -70,6 +70,10 @@ export type UpdateState = {
   commitDate: string;
   /** 工作区有未提交改动时为 true，此时不允许更新（会覆盖本地修改） */
   dirty: boolean;
+  /** 挡住更新的已跟踪文件改动，形如  M path，让用户知道到底卡在哪 */
+  changes: string[];
+  /** 未跟踪文件（不影响更新，只是提示） */
+  untracked: string[];
   remote: string;
   upstream: string;
   hasUpstream: boolean;
@@ -109,6 +113,8 @@ function blank(version: string, message: string): UpdateState {
     commitSubject: '',
     commitDate: '',
     dirty: false,
+    changes: [],
+    untracked: [],
     remote: '',
     upstream: '',
     hasUpstream: false,
@@ -130,7 +136,7 @@ export async function localState(): Promise<UpdateState> {
     return blank(version, '当前目录不是 git 仓库，无法在线更新');
   }
 
-  const [branch, commit, subject, date, status, remote] = await Promise.all([
+  const [branch, commit, subject, date, status, statusAll, remote] = await Promise.all([
     git(['rev-parse', '--abbrev-ref', 'HEAD']),
     git(['rev-parse', 'HEAD']),
     git(['log', '-1', '--format=%s']),
@@ -138,10 +144,18 @@ export async function localState(): Promise<UpdateState> {
     // 只看已跟踪文件的改动：未跟踪的文件（草稿、日志、bug.txt 之类）
     // 不会被 pull 覆盖，拿它们挡住更新等于把在线更新永久禁用。
     git(['status', '--porcelain', '--untracked-files=no']),
+    // 另取一份带未跟踪的，只用来给用户看清单，不参与 canUpdate 判断
+    git(['status', '--porcelain']),
     git(['remote', 'get-url', 'origin']),
   ]);
 
   const upstream = await git(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']);
+
+  const lines = (text: string) =>
+    text
+      .split('\n')
+      .map((l) => l.replace(/\s+$/, ''))
+      .filter(Boolean);
 
   const state = blank(version, '尚未检查更新');
   state.isGit = true;
@@ -150,13 +164,15 @@ export async function localState(): Promise<UpdateState> {
   state.shortCommit = state.commit.slice(0, 7);
   state.commitSubject = subject.ok ? subject.out : '';
   state.commitDate = date.ok ? date.out : '';
-  state.dirty = status.ok && status.out.length > 0;
+  state.changes = status.ok ? lines(status.out) : [];
+  state.untracked = statusAll.ok ? lines(statusAll.out).filter((l) => l.startsWith('??')) : [];
+  state.dirty = state.changes.length > 0;
   state.remote = remote.ok ? remote.out : '';
   state.hasUpstream = upstream.ok && upstream.out.length > 0;
   state.upstream = state.hasUpstream ? upstream.out : state.branch ? `origin/${state.branch}` : '';
   state.canUpdate = state.isGit && !state.dirty;
   state.message = state.dirty
-    ? '有未提交的本地改动，更新会覆盖它们'
+    ? `有 ${state.changes.length} 个已跟踪文件被改过，更新会覆盖它们`
     : '已提交，可以检查更新';
   return state;
 }
@@ -210,7 +226,7 @@ export async function checkUpdate(force = false): Promise<UpdateState> {
   state.latestSubject = ls ?? '';
 
   if (state.dirty) {
-    state.message = '有未提交的本地改动，更新会覆盖它们';
+    state.message = `有 ${state.changes.length} 个已跟踪文件被改过，更新会覆盖它们`;
     state.canUpdate = false;
   } else if (state.behind > 0) {
     state.canUpdate = true;
@@ -249,8 +265,12 @@ export type ApplyResult = {
  *
  * 只走 fast-forward，绝不产生本地合并提交 —— 单机部署出现冲突时让人来处理，
  * 而不是留一个半合并的仓库。
+ *
+ * `stash: true` 时先 `git stash push -u` 把本地改动收起来再更新。
+ * 用 stash 而不是 checkout：改动还在，随时 `git stash pop` 能拿回来，
+ * 这样「工作区不干净 → 永远更新不了」这个死循环才有出路。
  */
-export async function applyUpdate(): Promise<ApplyResult> {
+export async function applyUpdate(options: { stash?: boolean } = {}): Promise<ApplyResult> {
   const before = await localState();
   const steps: UpdateStep[] = [];
 
@@ -265,16 +285,47 @@ export async function applyUpdate(): Promise<ApplyResult> {
       message: '无法更新：不是 git 仓库',
     };
   }
+
+  let stashed = false;
   if (before.dirty) {
-    return {
-      ok: false,
-      restarted: false,
-      restartRequired: false,
-      before: { commit: before.commit, shortCommit: before.shortCommit },
-      after: { commit: before.commit, shortCommit: before.shortCommit },
-      steps: [{ name: '检查工作区', ok: false, detail: '有未提交的本地改动，先提交或还原再更新' }],
-      message: '无法更新：工作区不干净',
-    };
+    if (!options.stash) {
+      return {
+        ok: false,
+        restarted: false,
+        restartRequired: false,
+        before: { commit: before.commit, shortCommit: before.shortCommit },
+        after: { commit: before.commit, shortCommit: before.shortCommit },
+        steps: [
+          {
+            name: '检查工作区',
+            ok: false,
+            detail: `有 ${before.changes.length} 个已跟踪文件被改过，先提交或还原再更新`,
+          },
+        ],
+        message: '无法更新：工作区不干净',
+      };
+    }
+    const stash = await git(
+      ['stash', 'push', '-u', '-m', `dsh-update-${new Date().toISOString()}`],
+      60000,
+    );
+    stashed = stash.ok;
+    steps.push({
+      name: 'git stash push -u（暂存本地改动）',
+      ok: stash.ok,
+      detail: stash.ok ? '改动已收进 stash，可用 git stash pop 取回' : stash.err.split('\n').slice(0, 3).join(' '),
+    });
+    if (!stash.ok) {
+      return {
+        ok: false,
+        restarted: false,
+        restartRequired: false,
+        before: { commit: before.commit, shortCommit: before.shortCommit },
+        after: { commit: before.commit, shortCommit: before.shortCommit },
+        steps,
+        message: '无法更新：暂存本地改动失败',
+      };
+    }
   }
 
   if (!before.branch || before.branch === 'HEAD') {
@@ -301,6 +352,15 @@ export async function applyUpdate(): Promise<ApplyResult> {
     detail: pull.ok ? '' : pull.err.split('\n').slice(0, 4).join(' '),
   });
   if (!pull.ok) {
+    // 更新没成，把刚收起来的改动放回去，别让人以为改动丢了
+    if (stashed) {
+      const pop = await git(['stash', 'pop'], 60000);
+      steps.push({
+        name: 'git stash pop（还原本地改动）',
+        ok: pop.ok,
+        detail: pop.ok ? '' : pop.err.split('\n').slice(0, 3).join(' '),
+      });
+    }
     return {
       ok: false,
       restarted: false,

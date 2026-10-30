@@ -96,11 +96,11 @@ export function SettingsPage() {
     }
   };
 
-  const doApply = async () => {
+  const doApply = async (options: { stash?: boolean } = {}) => {
     setApplying(true);
     setApplyResult(null);
     try {
-      const result = await api.update.apply();
+      const result = await api.update.apply(options);
       setApplyResult(result);
       if (result.ok) toast.success(result.message);
       else toast.error(result.message);
@@ -382,10 +382,10 @@ export function SettingsPage() {
               <span className="kv-val">
                 {checking ? (
                   <span className="dim">检查中…</span>
-                ) : behind > 0 ? (
-                  <Badge tone="orange">落后 {behind} 个提交</Badge>
                 ) : state?.dirty ? (
                   <Badge tone="red">有未提交改动</Badge>
+                ) : behind > 0 ? (
+                  <Badge tone="orange">落后 {behind} 个提交</Badge>
                 ) : state?.checkedAt ? (
                   <Badge tone="green">已是最新</Badge>
                 ) : (
@@ -411,7 +411,25 @@ export function SettingsPage() {
 
           {state?.dirty ? (
             <div className="notice warn" style={{ marginTop: 10 }}>
-              工作区有未提交的改动。更新会覆盖它们，先提交或还原再继续。
+              <div style={{ marginBottom: 6 }}>
+                工作区有 {state.changes.length} 个已跟踪文件被改过。更新会覆盖它们，先提交或还原再继续。
+              </div>
+              <div className="dirty-list mono small">
+                {state.changes.slice(0, 12).map((line) => (
+                  <div key={line}>{line}</div>
+                ))}
+                {state.changes.length > 12 ? <div>… 还有 {state.changes.length - 12} 个</div> : null}
+              </div>
+              <div className="dim small" style={{ marginTop: 6 }}>
+                在项目目录执行 <span className="mono">git stash</span>（保留改动）或{' '}
+                <span className="mono">git checkout -- .</span>（丢弃改动），再回来刷新。
+              </div>
+            </div>
+          ) : null}
+
+          {!state?.dirty && (state?.untracked?.length ?? 0) > 0 ? (
+            <div className="notice" style={{ marginTop: 10 }}>
+              另有 {state!.untracked.length} 个未跟踪文件（草稿、日志之类），不会挡住更新，pull 也不会覆盖它们。
             </div>
           ) : null}
 
@@ -454,10 +472,22 @@ export function SettingsPage() {
             >
               {applying ? '更新中…' : '立即更新'}
             </button>
+            {state?.dirty ? (
+              <button
+                type="button"
+                className="btn"
+                disabled={applying || checking}
+                onClick={() => void doApply({ stash: true })}
+              >
+                {applying ? '更新中…' : '暂存改动并更新'}
+              </button>
+            ) : null}
             <span className="dim small">
               {applying
                 ? '正在拉取并重建前端，可能要一两分钟'
-                : '更新 = git pull + 必要时装依赖 + 重建前端'}
+                : state?.dirty
+                  ? '暂存 = git stash -u，改动不会丢，随时 git stash pop 取回'
+                  : '更新 = git pull + 必要时装依赖 + 重建前端'}
             </span>
           </div>
         </div>

@@ -17,9 +17,15 @@ export function registerUpdateRoutes(app: FastifyInstance): void {
     return checkUpdate(force);
   });
 
-  /** 执行更新：pull → 必要时装依赖 → 重建前端 */
-  app.post('/api/update/apply', async (_req, reply) => {
-    const result = await applyUpdate();
+  /**
+   * 执行更新：pull → 必要时装依赖 → 重建前端。
+   *
+   * `stash: true` 会先把本地未提交改动 `git stash` 起来再更新，
+   * 用来解开「工作区不干净 → 永远更新不了 → 改动越攒越多」的死循环。
+   */
+  app.post('/api/update/apply', async (req, reply) => {
+    const body = (req.body ?? {}) as { stash?: boolean };
+    const result = await applyUpdate({ stash: body.stash === true });
     if (!result.ok) reply.status(409);
     return result;
   });

@@ -579,6 +579,10 @@ export interface UpdateState {
   commitSubject: string;
   commitDate: string;
   dirty: boolean;
+  /** 挡住更新的已跟踪文件改动（形如 " M path"） */
+  changes: string[];
+  /** 未跟踪文件，只做提示，不影响更新 */
+  untracked: string[];
   remote: string;
   upstream: string;
   hasUpstream: boolean;

@@ -525,8 +525,9 @@ export const api = {
     /** 联网检查（服务端 30 秒内复用结果） */
     check: (force = false) =>
       request<UpdateState>('GET', `/api/update/check${force ? '?force=1' : ''}`),
-    /** 执行更新：pull → 装依赖 → 重建前端 */
-    apply: () => request<ApplyUpdateResult>('POST', '/api/update/apply', {}),
+    /** 执行更新：pull → 装依赖 → 重建前端。stash=true 时先 git stash 本地改动 */
+    apply: (options: { stash?: boolean } = {}) =>
+    request<ApplyUpdateResult>('POST', '/api/update/apply', { stash: options.stash === true }),
   },
 
   chat: {
