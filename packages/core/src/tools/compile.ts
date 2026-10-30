@@ -1,5 +1,6 @@
 import type { EndpointRecord, ToolAnnotations } from '../schema/asset.ts';
 import { slugify } from '../import/normalize.ts';
+import { coerceExample, paramHint, sanitizePublicText, semanticLabel } from './describe.ts';
 
 export type CompiledTool = {
   name: string;
@@ -89,12 +90,20 @@ function jsonTypeOf(param: EndpointRecord['params'][number]): Record<string, unk
     default:
       base.type = 'string';
   }
-  if (param.description) base.description = param.description;
+  if (param.description?.trim()) {
+    base.description = param.description.trim();
+  } else {
+    // AI 没给说明时也得让调用方看懂，不能留空
+    base.description = paramHint(param);
+  }
   if (param.default !== undefined && param.secretRef === undefined) base.default = param.default;
   if (param.pattern) base.pattern = param.pattern;
   if (param.minimum !== undefined) base.minimum = param.minimum;
   if (param.maximum !== undefined) base.maximum = param.maximum;
-  if (param.example !== undefined && typeof param.example !== 'object') base.examples = [param.example];
+  if (param.example !== undefined) {
+    const example = coerceExample(param.example, String(base.type));
+    if (example !== undefined) base.examples = [example];
+  }
   return base;
 }
 
@@ -109,8 +118,8 @@ export function compileTool(endpoint: EndpointRecord, opts: { platformName?: str
     if (p.in === 'header' && /^(accept|content-type|content-encoding|accept-encoding)$/i.test(p.name)) continue;
     const key = p.in === 'path' || p.in === 'query' || p.in === 'body' ? p.name : `${p.in}_${p.name}`;
     const schema = jsonTypeOf(p);
-    if (p.in === 'header') schema.description = `[header:${p.name}] ${p.description}`.trim();
-    if (p.in === 'cookie') schema.description = `[cookie:${p.name}] ${p.description}`.trim();
+    if (p.in === 'header') schema.description = `[header:${p.name}] ${String(schema.description ?? '')}`.trim();
+    if (p.in === 'cookie') schema.description = `[cookie:${p.name}] ${String(schema.description ?? '')}`.trim();
     props[key] = schema;
     if (p.required) required.push(key);
   }
@@ -122,18 +131,31 @@ export function compileTool(endpoint: EndpointRecord, opts: { platformName?: str
   };
   if (required.length) inputSchema.required = required;
 
+  // 对外文案：标题/描述一律清洗，绝不把 `GET /api/v1/orders` 递给调用方
+  const label = semanticLabel(endpoint.method, endpoint.pathTemplate);
+  const title = sanitizePublicText(endpoint.summary, label);
   const descParts: string[] = [];
-  const head = endpoint.summary?.trim() || `${endpoint.method} ${endpoint.pathTemplate}`;
-  descParts.push(head);
-  if (endpoint.description?.trim() && endpoint.description.trim() !== head) descParts.push(endpoint.description.trim());
-  // 对外描述不暴露上游域名与路径结构
+  descParts.push(title);
+  const extra = sanitizePublicText(endpoint.description, '');
+  if (extra && extra !== title) descParts.push(extra);
   if (endpoint.sideEffect === 'write') descParts.push('⚠️ 该接口会修改数据');
   const secretParams = endpoint.params.filter((p) => p.secretRef);
   if (secretParams.length) descParts.push('鉴权由网关自动注入，无需传 token。');
+  // 参数清单也写进描述：MCP 客户端不一定渲染 inputSchema，读文字更保险
+  const visibleParams = endpoint.params.filter(
+    (p) => !p.secretRef && !(p.in === 'header' && /^(accept|content-type|content-encoding|accept-encoding)$/i.test(p.name)),
+  );
+  if (visibleParams.length) {
+    const lines = visibleParams.map((p) => {
+      const hint = p.description?.trim() || paramHint(p);
+      return `- ${p.name}（${p.in}${p.required ? '，必填' : ''}）：${hint}`;
+    });
+    descParts.push(`参数：\n${lines.join('\n')}`);
+  }
 
   return {
     name: resolveToolName(endpoint, opts),
-    title: endpoint.summary?.trim() || resolveToolName(endpoint, opts),
+    title,
     description: descParts.join('\n'),
     inputSchema,
     annotations: {

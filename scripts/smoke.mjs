@@ -80,6 +80,21 @@ check('网关 /gw/v1/tools', gwTools.status === 200, String(gwTools.status));
 const gwToolsBody = await j(gwTools);
 check('网关工具清单非空', (Array.isArray(gwToolsBody) ? gwToolsBody.length : gwToolsBody?.tools?.length) >= 1);
 
+// 对外文案不许带上游路径：网关把域名掩了，title/description 里再写 `GET /api/v1/x` 等于白掩
+const UPSTREAM_PATH_RE = /\/api\/|\/v\d+\/|\b(?:GET|POST|PUT|PATCH|DELETE)\s+\//;
+const gwList = Array.isArray(gwToolsBody) ? gwToolsBody : (gwToolsBody?.tools ?? []);
+const leakyText = gwList.filter(
+  (t) => UPSTREAM_PATH_RE.test(t.title ?? '') || UPSTREAM_PATH_RE.test(t.description ?? ''),
+);
+check('工具标题/描述不含上游路径', leakyText.length === 0, leakyText.map((t) => t.name).join(',') || '干净');
+
+const missingParamDesc = gwList.flatMap((t) =>
+  Object.entries(t.inputSchema?.properties ?? {})
+    .filter(([, schema]) => !String(schema?.description ?? '').trim())
+    .map(([k]) => `${t.name}.${k}`),
+);
+check('每个入参都有说明', missingParamDesc.length === 0, missingParamDesc.join(',') || '全部有');
+
 const call = await j(await fetch(`${BASE}/gw/v1/call`, {
   method: 'POST', headers: GK,
   body: JSON.stringify({ tool: t0.name, args }),
@@ -117,6 +132,20 @@ for (const [path, name] of [
 }
 const oa = await j(await fetch(`${BASE}/gw/openapi.json`, { headers: { 'x-api-key': created.key } }));
 check('openapi 是 3.x', String(oa.openapi ?? '').startsWith('3.'), oa.openapi);
+
+const me = await j(await fetch(`${BASE}/gw/v1/me`, { headers: { 'x-api-key': created.key } }));
+const meLeaky = (me.endpoints ?? []).filter(
+  (e) =>
+    UPSTREAM_PATH_RE.test(e.title ?? '') ||
+    UPSTREAM_PATH_RE.test(e.description ?? '') ||
+    UPSTREAM_PATH_RE.test(e.notes ?? ''),
+);
+check('自省里标题/描述/备注都不含上游路径', meLeaky.length === 0, meLeaky.map((e) => e.name).join(',') || '干净');
+
+const oaLeaky = Object.values(oa.paths ?? {}).filter((p) =>
+  UPSTREAM_PATH_RE.test(p?.get?.summary ?? ''),
+);
+check('openapi summary 不含上游路径', oaLeaky.length === 0, `${oaLeaky.length} 个`);
 
 section('5. 早期失败也要留痕');
 const before = (await j(await fetch(`${BASE}/api/audit?limit=50`, { headers: A }))).length;

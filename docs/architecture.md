@@ -223,6 +223,56 @@ github__get_users_repos           ← 连是哪个服务商都告诉对方了
 它抓的是 IP 片段、端口、`/api/`、`/v1/` —— 服务商名（`github_users`）抓不出来，
 那种只能靠人自己别这么起。
 
+#### 对外文案：标题、描述、参数说明
+
+名字改干净了，**文案还在漏**。没开 AI 时 `summary` 就是上游原文，于是：
+
+```
+GET /gw/v1/tools  →
+  title:       "GET /api/v1/orders"
+  description: "GET /api/v1/orders"
+  inputSchema.properties.page = { type: "number" }     ← 没有 description
+```
+
+网关把域名掩了，路径原样递给每一个调用方。而且 `page` 是什么、传什么格式，调用方完全靠猜。
+
+`packages/core/src/tools/describe.ts` 是这套文案的地基：
+
+| 函数 | 作用 |
+|---|---|
+| `looksLikeUpstreamPath()` | 认出 `GET /api/v1/x`、`/v1/x`、`https://…`、裸路径 `/users/{id}` |
+| `semanticLabel()` | 方法 + 路径 → 「查询 orders 列表」「按 ID 查询 orders 详情」，**不带路径** |
+| `sanitizePublicText()` | 空的、或者写着上游路径的，一律换成兜底说法 |
+| `paramHint()` | 参数名 → 中文说明（`page` → 页码，`limit` → 每页条数，`userId` → 唯一标识…） |
+| `coerceExample()` | 示例值按声明类型纠正（`page` 声明 number，示例不该是字符串 `"1"`） |
+
+三处一起改：
+
+1. **`compileTool`** —— `title`/`description` 走 `sanitizePublicText`，参数没说明时用 `paramHint` 兜底。
+   描述里额外列出参数清单（`- page（query）：页码，从 1 开始`），MCP 客户端不渲染 `inputSchema` 也读得懂。
+2. **`/gw/v1/me`** —— 不再直接用 `ep.summary` / `ep.notes`，改用编译后的工具文案，
+   `notes` 过一遍 `stripPathParenthetical()` 抠掉 `（GET /api/v1/orders）` 这种括号补丁。
+3. **`/gw/openapi.json`** —— `summary` 用 `tool.title`，参数说明用 `paramHint` 兜底。
+
+AI 那条链也要管：模型看到 `GET /api/v1/orders` 很可能原样抄回来当标题。
+所以 `applyAnalysis` / `applyDescription` / `applyParamHints` 收模型输出时都过一遍
+`looksLikeUpstreamPath()`，命中就丢掉，落回规则兜底 —— **不能让模型把路径带回去**。
+
+命名 Agent 现在还会产出 `description`（一两句功能说明，说清做什么、什么副作用），
+以前它只管名字和参数说明，工具描述是空的。
+
+改完的效果：
+
+```
+GET /gw/v1/tools  →
+  title:       "查询 orders 列表"
+  description: "查询 orders 列表\n参数：\n- page（query）：页码，从 1 开始"
+  inputSchema.properties.page = { type: "number", description: "页码，从 1 开始", examples: [1] }
+```
+
+`scripts/smoke.mjs` 里加了硬检查：`/gw/v1/tools`、`/gw/v1/me`、`/gw/openapi.json`
+三处的标题/描述/备注都不许命中 `/\/api\/|\/v\d+\/|METHOD \//`，且每个入参必须有说明。
+
 #### 令牌进不去服务端
 
 接入包在**浏览器里**拼，令牌不会发给任何接口。已有令牌的明文只在创建时显示过一次

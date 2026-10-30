@@ -1,4 +1,5 @@
 import type { EndpointRecord, PlatformRecord, ToolRecord } from '../schema/asset.ts';
+import { paramHint } from '../tools/describe.ts';
 
 /** 由 catalog 生成对外 OpenAPI 3.1 描述 */
 export function buildOpenApiDoc(opts: {
@@ -20,7 +21,7 @@ export function buildOpenApiDoc(opts: {
       if (p.secretRef) continue;
       if (p.in === 'path' || p.in === 'query') {
         props[p.name] = { type: p.type === 'integer' ? 'integer' : p.type === 'number' ? 'number' : 'string' };
-        if (p.description) (props[p.name] as Record<string, unknown>).description = p.description;
+        (props[p.name] as Record<string, unknown>).description = p.description?.trim() || paramHint(p);
         if (p.required) required.push(p.name);
       }
     }
@@ -28,7 +29,8 @@ export function buildOpenApiDoc(opts: {
     paths[path] = {
       get: {
         operationId: tool.name,
-        summary: ep.summary || tool.name,
+        // 用工具标题，不要 ep.summary —— 那是上游原文（`GET /api/v1/orders`）
+        summary: tool.title || tool.name,
         description: tool.description,
         parameters: Object.entries(props).map(([name, schema]) => ({
           name,

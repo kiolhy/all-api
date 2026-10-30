@@ -13,6 +13,7 @@ import { z } from 'zod';
 import type { LlmConfig } from '../config.ts';
 import type { NormalizedDraft } from '../import/types.ts';
 import { chatJson } from '../ai/client.ts';
+import { looksLikeUpstreamPath } from '../tools/describe.ts';
 
 /** 宽松 schema：模型给什么就收什么，缺字段不影响其它 */
 const lenientString = z
@@ -23,6 +24,7 @@ const lenientString = z
 const NamingItemSchema = z.object({
   i: z.coerce.number().int().catch(-1),
   publicName: lenientString.optional(),
+  description: lenientString.optional(),
   paramDescriptions: z.record(z.unknown()).catch({}).optional(),
   paramRequired: z
     .union([z.array(lenientString), lenientString.transform((s) => (s ? [s] : []))])
@@ -62,6 +64,12 @@ const SYSTEM = `你是 API 对外命名专家。用户要把他人的接口包�
   · 同一批里必须互不相同
   · 要让人一眼看懂做什么，但看不出背后是谁
 - paramDescriptions：键是参数名，值是给调用方看的中文说明，说清「传什么、什么格式」
+  · 每个非密钥参数都要给，不许留空
+  · 举例：page → "页码，从 1 开始"；limit → "每页条数，默认 20，最大 100"；userId → "用户唯一标识"
+  · 同样不许出现上游路径、域名、版本号
+- description：给调用方看的一两句功能说明，说清「做什么、什么时候用、有什么副作用」
+  · 不要复述路径，不要出现 api / v1 / http 这类字样
+  · 有写操作就点明「会修改数据」
 - paramRequired：必填参数名数组
 - paramTypes：参数名 → string/number/integer/boolean/array/object 之一
 
@@ -180,6 +188,7 @@ export async function nameDrafts(
       draft.endpoint.publicName = name;
 
       applyParamHints(draft, item);
+      applyDescription(draft, item);
       stats.named += 1;
       stats.aiUsed = true;
     }
@@ -210,13 +219,23 @@ export function sanitizeName(raw: string | undefined): string {
 
 type NamingItem = z.infer<typeof NamingItemSchema>;
 
+/** 模型给的对外描述：有内容且不含上游痕迹才收 */
+function applyDescription(draft: NormalizedDraft, item: NamingItem): void {
+  const text = (item.description ?? '').trim();
+  if (!text) return;
+  if (looksLikeUpstreamPath(text)) return;
+  draft.endpoint.description = text.slice(0, 600);
+}
+
 function applyParamHints(draft: NormalizedDraft, item: NamingItem): void {
   const ep = draft.endpoint;
   for (const p of ep.params) {
     if (p.secretRef) continue;
     const desc = item.paramDescriptions?.[p.name];
     const descText = typeof desc === 'string' ? desc.trim() : desc == null ? '' : String(desc).trim();
-    if (descText) p.description = descText;
+    // 模型有时会把 `GET /api/v1/orders` 抄进参数说明 —— 这种一律丢掉，
+    // 让 compileTool 的 paramHint 兜底，而不是把上游路径递给调用方。
+    if (descText && !looksLikeUpstreamPath(descText)) p.description = descText;
 
     const type = item.paramTypes?.[p.name];
     const typeText = typeof type === 'string' ? type.trim() : '';

@@ -15,6 +15,7 @@ import type { LlmConfig } from '../config.ts';
 import type { NormalizedDraft } from '../import/types.ts';
 import type { ProbeOutcome } from './probe.ts';
 import { chatJson } from '../ai/client.ts';
+import { looksLikeUpstreamPath } from '../tools/describe.ts';
 
 /**
  * 宽松 schema。
@@ -239,8 +240,13 @@ type AnalysisItem = z.infer<typeof AnalysisItemSchema>;
 function applyAnalysis(draft: NormalizedDraft, item: AnalysisItem): void {
   const ep = draft.endpoint;
 
-  if (item.summary?.trim()) ep.summary = item.summary.trim();
-  if (item.description?.trim()) ep.description = item.description.trim();
+  // 模型可能把 `GET /api/v1/orders` 原样抄回来当标题 —— 这种不收，
+  // 让它落到 compileTool 的语义兜底（「查询 orders 列表」）。
+  const summary = item.summary?.trim() ?? '';
+  if (summary && !looksLikeUpstreamPath(summary)) ep.summary = summary;
+
+  const desc = item.description?.trim() ?? '';
+  if (desc && !looksLikeUpstreamPath(desc)) ep.description = desc;
 
   // 备注：把 purpose / notes / returnsWhat / keyFields / cautions 组装成一段人话
   const parts: string[] = [];

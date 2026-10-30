@@ -74,13 +74,20 @@ before(async () => {
           };
         });
       } else if (system.includes('对外命名专家')) {
-        items = (payload.items ?? []).map((it) => ({
-          i: it.i,
-          publicName: 'list_orders',
-          paramDescriptions: { page: '页码，从 1 开始' },
-          paramRequired: [],
-          paramTypes: { page: 'integer' },
-        }));
+        items = (payload.items ?? []).map((it) => {
+          // 用路径里带 leaky 的草稿触发「模型把上游路径抄回来」的分支
+          const leaky = JSON.stringify(it).includes('leaky');
+          return {
+            i: it.i,
+            publicName: leaky ? 'leaky_tool' : 'list_orders',
+            description: leaky
+              ? 'GET /api/v1/leaky 这个接口用来查东西'
+              : '分页查询订单列表，返回订单号与金额。',
+            paramDescriptions: { page: leaky ? '参考 GET /api/v1/leaky?page=1' : '页码，从 1 开始' },
+            paramRequired: [],
+            paramTypes: { page: 'integer' },
+          };
+        });
       } else {
         items = [];
       }
@@ -347,6 +354,28 @@ test('命名：生成对外名与参数说明', async () => {
   assert.equal(d.endpoint.publicName, 'list_orders');
   assert.equal(d.endpoint.params[0]!.description, '页码，从 1 开始');
   assert.equal(d.endpoint.params[0]!.type, 'integer');
+});
+
+test('命名：同时产出对外描述', async () => {
+  const d = draftFrom(`curl 'http://127.0.0.1:${upstreamPort}/v1/orders?page=1'`);
+  d.endpoint.params = [{ name: 'page', in: 'query', type: 'string', required: false, description: '' }];
+
+  await nameDrafts(cfg(), [d]);
+  assert.equal(d.endpoint.description, '分页查询订单列表，返回订单号与金额。');
+});
+
+test('命名：模型把上游路径抄回来时，描述和参数说明都不收', async () => {
+  const d = draftFrom(`curl 'http://127.0.0.1:${upstreamPort}/v1/leaky?page=1'`);
+  d.endpoint.params = [{ name: 'page', in: 'query', type: 'string', required: false, description: '' }];
+  d.endpoint.description = '';
+
+  await nameDrafts(cfg(), [d]);
+
+  // 模型给的是 `GET /api/v1/leaky 这个接口用来查东西`
+  assert.equal(d.endpoint.description, '', '带路径的描述必须丢弃');
+  assert.equal(d.endpoint.params[0]!.description, '', '带路径的参数说明必须丢弃');
+  // 名字本身仍是干净的（sanitizeName 会剥掉上游痕迹）
+  assert.equal(d.endpoint.publicName, 'leaky_tool');
 });
 
 test('命名：撞名自动加后缀', async () => {

@@ -2,6 +2,7 @@ import type { Body, EndpointInput, HttpMethod, Param, ParamType } from '../schem
 import type { NormalizedDraft, PendingSecret, RequestSpec } from './types.ts';
 import { SECRET_REF_RE } from '../secrets/vault.ts';
 import { safeJsonParse } from '../util/json.ts';
+import { semanticLabel } from '../tools/describe.ts';
 
 /* ────────────────────────── slug 工具 ────────────────────────── */
 
@@ -49,47 +50,18 @@ export function siteKeyFromUrl(url: URL): string {
 
 /* ────────────────────────── 备注兜底 ────────────────────────── */
 
-const VERB_BY_METHOD: Record<string, string> = {
-  GET: '查询',
-  HEAD: '检查',
-  POST: '创建',
-  PUT: '更新',
-  PATCH: '更新',
-  DELETE: '删除',
-};
-
 /**
  * 方法 + 路径 → 一句话备注。
  *
  * 这是 **AI 未启用时的兜底**：以前 notes 直接是空串，用户整理完什么都看不到。
  * 现在至少给出「查询 orders 列表」这种可读说明，并明确标注未经 AI 分析。
  * AI 分析成功时 applyAnalysis 会整段覆盖，不会和这里打架。
+ *
+ * 注意：**不再把 `（GET /api/v1/orders）` 拼进去**。notes 会经 /gw/v1/me
+ * 递给调用方，带上路径等于把上游结构送出去。
  */
 export function fallbackNotes(method: string, pathTemplate: string): string {
-  const m = (method || 'GET').toUpperCase();
-  const verb = VERB_BY_METHOD[m] ?? m;
-  const segs = pathTemplate.split('/').filter(Boolean);
-
-  // 最后一个路径段是参数（{id} / :id）就认为是「按 ID 查详情」
-  const lastSeg = segs[segs.length - 1] ?? '';
-  const endsWithParam = /^\{[^}]+\}$/.test(lastSeg) || /^:[A-Za-z_]\w*$/.test(lastSeg);
-
-  // 资源名：倒着找第一个既不是参数、也不是版本号前缀的段
-  const resource = [...segs]
-    .reverse()
-    .find((s) => !/^\{[^}]+\}$/.test(s) && !/^:[A-Za-z_]\w*$/.test(s) && !/^v\d+$/i.test(s));
-
-  let what: string;
-  if (!resource) {
-    what = `${verb}接口`;
-  } else if (m === 'GET' || m === 'HEAD') {
-    // 只有「末尾是参数」才算查详情；/users/{id}/orders 仍然是查列表
-    what = endsWithParam ? `按 ID 查询 ${resource} 详情` : `${verb} ${resource} 列表`;
-  } else {
-    what = `${verb} ${resource}`;
-  }
-
-  return `${what}（${m} ${pathTemplate}）\n（规则生成，未经 AI 分析）`;
+  return `${semanticLabel(method, pathTemplate)}\n（规则生成，未经 AI 分析）`;
 }
 
 /* ────────────────────────── 噪声头 ────────────────────────── */

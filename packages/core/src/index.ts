@@ -34,6 +34,7 @@ export * from './invoke/engine.ts';
 export * from './invoke/probe.ts';
 
 export * from './tools/compile.ts';
+export * from './tools/describe.ts';
 
 export * from './ai/client.ts';
 export * from './chat/agent.ts';

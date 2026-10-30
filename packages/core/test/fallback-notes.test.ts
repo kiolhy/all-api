@@ -12,7 +12,14 @@ import { fallbackNotes } from '../src/import/normalize.ts';
 test('GET 列表：查询 X 列表', () => {
   const n = fallbackNotes('GET', '/api/v1/orders');
   assert.match(n, /查询 orders 列表/);
-  assert.match(n, /GET \/api\/v1\/orders/);
+});
+
+test('备注里不再带上游路径', () => {
+  // notes 会经 /gw/v1/me 递给调用方，带路径等于把上游结构送出去
+  const n = fallbackNotes('GET', '/api/v1/orders');
+  assert.doesNotMatch(n, /\/api\//);
+  assert.doesNotMatch(n, /\/v1\//);
+  assert.doesNotMatch(n, /GET\s+\//);
 });
 
 test('GET 末尾是参数：按 ID 查详情', () => {
