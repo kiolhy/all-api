@@ -147,6 +147,8 @@ export function SettingsPage() {
           timeoutMs: Math.round(timeout),
           ...(apiKey.trim() ? { apiKey: apiKey.trim() } : {}),
         },
+        // 带上加载时看到的 updatedAt：期间被别人改过就直接 409，不静默覆盖
+        expectedUpdatedAt: llm?.updatedAt ?? null,
       });
       setApiKey('');
       // 用服务端返回的真实状态回填，避免「以为开了其实没开」
@@ -169,11 +171,15 @@ export function SettingsPage() {
   const clearKey = async () => {
     setSaving(true);
     try {
-      await api.settings.save({ llm: { clearApiKey: true } });
+      await api.settings.save({
+        llm: { clearApiKey: true },
+        expectedUpdatedAt: llm?.updatedAt ?? null,
+      });
       toast.success('已清除 apiKey，LLM 已关闭');
       setApiKey('');
       setEnabled(false);
       settings.reload();
+      bumpData();
     } catch (err) {
       toast.error(errorMessage(err));
     } finally {

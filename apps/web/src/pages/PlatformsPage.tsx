@@ -55,11 +55,11 @@ const EMPTY_FORM: PlatformFormState = {
   name: '',
   baseUrl: '',
   authKind: 'none',
-  authConfig: '{}',
-  defaultHeaders: '{}',
+  authConfig: '',
+  defaultHeaders: '',
   egressAllowHosts: '',
-  qps: '5',
-  daily: '10000',
+  qps: '',
+  daily: '',
   allowPrivate: false,
   notes: '',
 };
@@ -109,12 +109,19 @@ function buildInput(form: PlatformFormState): {
     errors.defaultHeaders = errorMessage(err);
   }
 
-  const qps = Number(form.qps);
-  const daily = Number(form.daily);
-  if (!Number.isFinite(qps) || qps <= 0) errors.qps = 'qps 需为正数';
-  if (!Number.isFinite(daily) || daily <= 0) errors.daily = 'daily 需为正整数';
+  // 留空就走服务端默认值（qps 5 / daily 10000），不再预填一个像真数据的 5 和 10000
+  const qpsText = form.qps.trim();
+  const dailyText = form.daily.trim();
+  const qps = qpsText === '' ? null : Number(qpsText);
+  const daily = dailyText === '' ? null : Number(dailyText);
+  if (qps !== null && (!Number.isFinite(qps) || qps <= 0)) errors.qps = 'qps 需为正数，留空用默认 5';
+  if (daily !== null && (!Number.isFinite(daily) || daily <= 0)) errors.daily = 'daily 需为正整数，留空用默认 10000';
 
   if (Object.keys(errors).length > 0) return { input: null, errors };
+
+  const rateLimit: { qps?: number; daily?: number } = {};
+  if (qps !== null) rateLimit.qps = qps;
+  if (daily !== null) rateLimit.daily = Math.round(daily);
 
   return {
     errors,
@@ -126,7 +133,7 @@ function buildInput(form: PlatformFormState): {
       authConfig,
       defaultHeaders,
       egressAllowHosts: splitList(form.egressAllowHosts),
-      rateLimit: { qps, daily: Math.round(daily) },
+      rateLimit,
       allowPrivate: form.allowPrivate,
       notes: form.notes,
     },

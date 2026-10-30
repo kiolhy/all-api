@@ -5,7 +5,7 @@
  * 任何一步非 0 立即停，退出码非 0。
  */
 import { spawn } from 'node:child_process';
-import { readdirSync } from 'node:fs';
+import { existsSync, readdirSync, statSync, unlinkSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 
@@ -13,6 +13,16 @@ const ROOT = resolve(import.meta.dirname, '..');
 const NODE = process.execPath;
 const spawned = [];
 let failed = false;
+
+/**
+ * 验收用独立数据库。
+ *
+ * 以前验收直接写生产库 `data/hub.db`，跑一次就多出一堆 probe_/test_ 资产，
+ * 用户看到的「102 个平台、58 个接口、失败率 58%」里混着大量测试残留。
+ * 现在默认落到 `data/verify-<pid>.db`，跑完删掉；要看现场就 VERIFY_KEEP_DB=1。
+ */
+const VERIFY_DB = process.env.VERIFY_DB_PATH ?? resolve(ROOT, 'data', `verify-${process.pid}.db`);
+const KEEP_DB = process.env.VERIFY_KEEP_DB === '1';
 
 /**
  * 假上游端口：刻意避开 8899（本机常被小米音频共享等软件占用）。
@@ -47,6 +57,8 @@ const VERIFY_ENV = {
   GATEWAY_BASE,
   // 网关自己也听这个端口（PORT 是服务端的启动参数）
   PORT: String(GATEWAY_PORT),
+  // 验收跑在临时库上，别把测试/探测数据写进生产 hub.db
+  DB_PATH: VERIFY_DB,
 };
 
 const c = {
@@ -96,7 +108,7 @@ async function alive(url, expectJson = true) {
 async function ensure(label, healthUrl, args) {
   if (await alive(healthUrl)) {
     console.log(c.dim(`· ${label} 已在运行，复用`));
-    return;
+    return { reused: true };
   }
   console.log(c.dim(`· 启动 ${label} …`));
   const p = spawn(NODE, args, { cwd: ROOT, stdio: 'ignore', env: VERIFY_ENV });
@@ -105,7 +117,7 @@ async function ensure(label, healthUrl, args) {
     await sleep(500);
     if (await alive(healthUrl)) {
       console.log(c.dim(`· ${label} 就绪`));
-      return;
+      return { reused: false };
     }
     if (p.exitCode !== null) {
       throw new Error(
@@ -117,8 +129,15 @@ async function ensure(label, healthUrl, args) {
   throw new Error(`${label} 启动超时`);
 }
 
-function cleanup() {
-  for (const p of spawned) {
+/**
+ * 关掉自己起的进程，并等它们真的退出。
+ *
+ * Windows 上进程还没退出时文件句柄还在，紧接着删临时库会 EBUSY 删不掉 ——
+ * 所以这里要等 exit，而不是发完 SIGTERM 就走。
+ */
+async function cleanup() {
+  const procs = spawned.splice(0, spawned.length);
+  for (const p of procs) {
     if (p.exitCode === null) {
       try {
         p.kill('SIGTERM');
@@ -127,16 +146,65 @@ function cleanup() {
       }
     }
   }
-  spawned.length = 0;
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline && procs.some((p) => p.exitCode === null)) {
+    await sleep(100);
+  }
+  for (const p of procs) {
+    if (p.exitCode === null) {
+      try {
+        p.kill('SIGKILL');
+      } catch {
+        /* 尽力而为 */
+      }
+    }
+  }
+}
+
+/** 删临时库；句柄刚释放时可能还要等一下，重试几次 */
+async function removeVerifyDb(path) {
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const left = ['', '-wal', '-shm'].map((s) => `${path}${s}`).filter((f) => existsSync(f));
+    if (left.length === 0) return true;
+    for (const file of left) {
+      try {
+        unlinkSync(file);
+      } catch {
+        /* 还占着，下一轮再试 */
+      }
+    }
+    await sleep(200);
+  }
+  return false;
+}
+
+/** 上次异常退出留下的临时库，顺手扫掉（10 分钟内动过的不碰，可能另一个验收正用着） */
+function sweepStaleVerifyDbs() {
+  const dir = resolve(ROOT, 'data');
+  if (!existsSync(dir)) return;
+  let removed = 0;
+  for (const name of readdirSync(dir)) {
+    if (!name.startsWith('verify-')) continue;
+    const file = resolve(dir, name);
+    try {
+      if (Date.now() - statSync(file).mtimeMs < 10 * 60 * 1000) continue;
+      unlinkSync(file);
+      removed++;
+    } catch {
+      /* 正被别的验收用着就跳过 */
+    }
+  }
+  if (removed > 0) console.log(c.dim(`· 清掉 ${removed} 个上次残留的临时库文件`));
 }
 
 process.on('SIGINT', () => {
-  cleanup();
-  process.exit(130);
+  void cleanup().finally(() => process.exit(130));
 });
 
 const steps = [
   ['类型检查', NODE, ['node_modules/typescript/bin/tsc', '-p', 'tsconfig.json']],
+  // 整理记录的进度/步骤收尾：内存库，不碰任何 data/*.db
+  ['整理记录进度', NODE, ['scripts/check-job-progress.mjs']],
   [
     '单元测试',
     NODE,
@@ -155,12 +223,32 @@ const steps = [
   ['AI 链路', NODE, ['scripts/ai-e2e-test.mjs']],
 ];
 
+let startedGateway = false;
+
+sweepStaleVerifyDbs();
+
 try {
   await ensure(`假上游 :${MOCK_PORT}`, `${MOCK_BASE}/api/v1/orders`, ['fixtures/mock-upstream/src/index.ts']);
-  await ensure(`网关 :${GATEWAY_PORT}`, `${GATEWAY_BASE}/api/health`, [
+  const gw = await ensure(`网关 :${GATEWAY_PORT}`, `${GATEWAY_BASE}/api/health`, [
     '--env-file-if-exists=.env',
     'apps/server/src/index.ts',
   ]);
+  startedGateway = !gw.reused;
+  if (gw.reused) {
+    console.log(
+      c.red(
+        `! 端口 ${GATEWAY_PORT} 上已经有网关在跑，本次验收会写它自己的库，测试数据不会隔离。`,
+      ),
+    );
+    console.log(
+      c.dim(`  要隔离：先停掉它，或换端口跑 —— GATEWAY_PORT=18778 npm run verify`),
+    );
+  } else {
+    console.log(c.dim(`· 验收库：${VERIFY_DB}（跑完删除）`));
+    // 临时库是空的，冒烟至少要一个平台/接口/工具
+    const seedCode = await run(NODE, ['scripts/verify-seed.mjs'], '验收库种子');
+    if (seedCode !== 0) throw new Error('验收库种子数据失败');
+  }
 
   for (const [label, cmd, args] of steps) {
     const code = await run(cmd, args, label);
@@ -174,7 +262,14 @@ try {
   console.log(c.red(`✖ ${err.message}`));
   failed = true;
 } finally {
-  cleanup();
+  await cleanup();
+  // 只删自己起的那个临时库；复用别人的网关时不碰任何文件
+  if (startedGateway && !KEEP_DB) {
+    const gone = await removeVerifyDb(VERIFY_DB);
+    if (!gone) console.log(c.dim(`· 临时库没删掉（被占用），下次跑会自动扫掉：${VERIFY_DB}`));
+  } else if (startedGateway && KEEP_DB) {
+    console.log(c.dim(`· 保留验收库：${VERIFY_DB}`));
+  }
 }
 
 console.log(failed ? c.red('\n✖ 验收未通过') : c.green('\n✔ 全部通过'));

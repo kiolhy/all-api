@@ -170,13 +170,16 @@ export interface PlatformInput {
   authConfig: Record<string, unknown>;
   defaultHeaders: Record<string, string>;
   egressAllowHosts: string[];
-  rateLimit: RateLimit;
+  /** 留空由服务端补默认值（qps 5 / daily 10000） */
+  rateLimit?: Partial<RateLimit>;
   allowPrivate: boolean;
   notes: string;
 }
 
-export interface Platform extends PlatformInput {
+export interface Platform extends Omit<PlatformInput, 'rateLimit'> {
   id: string;
+  /** 服务端返回的一定是完整的两项 */
+  rateLimit: RateLimit;
   /** 自动抓取的网站标题 */
   siteTitle?: string;
   /** 自动抓取的站点图标 */
@@ -505,6 +508,11 @@ export interface SettingsPatch {
     timeoutMs?: number;
     concurrency?: number;
   };
+  /**
+   * 乐观并发：提交加载时看到的 llm.updatedAt。
+   * 服务端发现已经变了会返回 409，避免把别人的改动静默覆盖。
+   */
+  expectedUpdatedAt?: string | null;
 }
 
 /* ────────────────────────── 试运行 ────────────────────────── */

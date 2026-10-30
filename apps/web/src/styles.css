@@ -886,6 +886,12 @@ a {
   white-space: nowrap;
 }
 
+/* 开关请求中：只做视觉提示，不禁用点击 */
+.toggle-busy {
+  opacity: 0.6;
+  transition: opacity 0.15s ease;
+}
+
 /* 可点表头排序 */
 .th-sort {
   display: inline-flex;

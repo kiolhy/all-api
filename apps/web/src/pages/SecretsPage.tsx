@@ -34,7 +34,7 @@ export function SecretsPage() {
 
   const [label, setLabel] = useState('');
   const [scopes, setScopes] = useState<string[]>([]);
-  const [newQuota, setNewQuota] = useState('0');
+  const [newQuota, setNewQuota] = useState('');
   const [newPeriod, setNewPeriod] = useState<QuotaPeriod>('total');
   const [newExpires, setNewExpires] = useState('');
   const [newIpList, setNewIpList] = useState('');
@@ -168,9 +168,10 @@ export function SecretsPage() {
       toast.error('API Key 标签必填');
       return;
     }
-    const quota = Number(newQuota);
+    // 留空就是 0（不限），不再预填一个 0 让人以为要自己改
+    const quota = newQuota.trim() === '' ? 0 : Number(newQuota);
     if (!Number.isFinite(quota) || quota < 0) {
-      toast.error('额度必须是不小于 0 的数字');
+      toast.error('额度必须是不小于 0 的数字，留空表示不限');
       return;
     }
     setCreatingKey(true);
@@ -186,7 +187,7 @@ export function SecretsPage() {
       setCreatedKey(created);
       setLabel('');
       setScopes([]);
-      setNewQuota('0');
+      setNewQuota('');
       setNewPeriod('total');
       setNewExpires('');
       setNewIpList('');
@@ -462,12 +463,13 @@ export function SecretsPage() {
             <Field label="标签">
               <TextInput value={label} onChange={(event) => setLabel(event.target.value)} placeholder="例如：我的 MCP 客户端" />
             </Field>
-            <Field label="额度上限" hint="0 = 不限">
+            <Field label="额度上限" hint="留空或填 0 = 不限">
               <TextInput
                 type="number"
                 min={0}
                 value={newQuota}
                 onChange={(event) => setNewQuota(event.target.value)}
+                placeholder="例如：1000（留空不限）"
               />
             </Field>
             <Field label="额度周期">

@@ -53,6 +53,7 @@ const CODE_STATUS: Record<string, number> = {
   not_found: 404,
   job_running: 409,
   conflict: 409,
+  settings_conflict: 409,
   forbidden: 403,
   unauthorized: 401,
 };
@@ -973,14 +974,30 @@ export function registerAdminRoutes(app: FastifyInstance): void {
         timeoutMs?: number;
         concurrency?: number;
       };
+      /**
+       * 乐观并发：前端提交它加载时看到的 updatedAt。
+       * 不匹配说明期间被别人改过，直接拒绝，避免把别人的改动静默覆盖掉。
+       * 不传则不做检查（脚本/接口直接调用）。
+       */
+      expectedUpdatedAt?: string | null;
     };
+    const storedMeta = settings.get<Record<string, unknown>>('llm', {});
+    const storedUpdatedAt = typeof storedMeta.updatedAt === 'string' ? storedMeta.updatedAt : null;
+    if (body.expectedUpdatedAt !== undefined && body.expectedUpdatedAt !== storedUpdatedAt) {
+      const who = describeActor(storedMeta.updatedBy) ?? '别人';
+      const when = storedUpdatedAt ?? '未知时间';
+      throw bad(
+        `LLM 配置已被 ${who} 在 ${when} 改过，你手上的是旧值。刷新页面确认后再保存。`,
+        'settings_conflict',
+      );
+    }
     // LLM 的 apiKey 会被原样作为 Authorization 头发出去。
     // baseUrl 必须是受信主机，否则"改配置"就等于"把 key 送人"。
     if (body.llm?.baseUrl !== undefined) {
       const problem = isValidLlmBaseUrl(body.llm.baseUrl);
       if (problem) throw bad(problem, 'invalid_base_url');
     }
-    const current = settings.get<Record<string, unknown>>('llm', {});
+    const current = storedMeta;
     const next = { ...current, ...(body.llm ?? {}) } as Record<string, unknown>;
     // apiKey 留空表示「不修改」：保留已存的，不要删掉
     // 要清除必须显式传 clearApiKey: true

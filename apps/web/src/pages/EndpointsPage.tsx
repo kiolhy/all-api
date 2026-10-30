@@ -99,8 +99,8 @@ function emptyForm(platformId: string): EndpointFormState {
     allowedKeyIds: [],
     publicName: '',
     params: '[]',
-    body: 'null',
-    response: DEFAULT_RESPONSE,
+    body: '',
+    response: '',
     examples: '[]',
   };
 }
@@ -959,7 +959,7 @@ export function EndpointsPage() {
               onChange={(next) => patchForm({ params: next })}
             />
           </div>
-          <Field label="body（JSON 或 null）" error={errors.body} span>
+          <Field label="body（JSON 或 null）" error={errors.body} span hint="没有请求体就留空">
             <JsonEditor
               value={form.body}
               rows={5}
@@ -967,7 +967,7 @@ export function EndpointsPage() {
               onChange={(next) => patchForm({ body: next })}
             />
           </Field>
-          <Field label="response（JSON）" error={errors.response} span>
+          <Field label="response（JSON）" error={errors.response} span hint="留空用默认：JSON、取全量、2MB 上限">
             <JsonEditor
               value={form.response}
               rows={7}

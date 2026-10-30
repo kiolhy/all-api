@@ -1,7 +1,7 @@
 /**
  * 本地全链路冒烟：把控制台 API、网关、文档端点、更新端点全跑一遍
  */
-const BASE = 'http://127.0.0.1:8778';
+const BASE = process.env.GATEWAY_BASE ?? 'http://127.0.0.1:8778';
 let pass = 0, fail = 0;
 const check = (n, c, e = '') => {
   c ? (console.log(`  ✔ ${n}${e ? ' — ' + e : ''}`), pass++) : (console.log(`  ✖ ${n}${e ? ' — ' + e : ''}`), fail++);

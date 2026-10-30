@@ -161,13 +161,16 @@ export function ToolsPage() {
       title: '启用',
       width: '80px',
       render: (tool) => (
-        <Toggle
-          checked={tool.enabled}
-          disabled={busyId === tool.id}
-          onChange={(next) =>
-            void patch(tool, { enabled: next }, `${tool.name} ${next ? '已启用' : '已停用'}`)
-          }
-        />
+        // 不在请求中禁用：禁用会让「点一次没反应」，改成乐观更新 + 允许连点，
+        // 谁最后落地以服务端为准，reload 之后会收敛。
+        <span className={busyId === tool.id ? 'toggle-busy' : undefined}>
+          <Toggle
+            checked={tool.enabled}
+            onChange={(next) =>
+              void patch(tool, { enabled: next }, `${tool.name} ${next ? '已启用' : '已停用'}`)
+            }
+          />
+        </span>
       ),
     },
     {

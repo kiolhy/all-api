@@ -883,9 +883,28 @@ export const importJobs = {
     getDb().prepare('delete from import_job where id = ?').run(id);
   },
   finish(id: string, status: string, stats: Record<string, unknown>, error: string | null, aiUsed: boolean): void {
+    // 收尾时把没跑完的步骤落定，别让「已完成」的任务里还挂着 running/pending，
+    // 也别让 done 的任务停在 0% —— 之前就是这样出现的「完成却 0%」。
+    const job = this.get(id);
+    let steps = job?.steps ?? [];
+    if (steps.length > 0) {
+      steps = steps.map((s) =>
+        s.status === 'running' || s.status === 'pending'
+          ? {
+              ...s,
+              status: status === 'done' ? 'skipped' : 'failed',
+              detail: s.detail || (status === 'done' ? '未执行（已跳过）' : '任务未完成'),
+            }
+          : s,
+      );
+    }
+    const done = steps.filter((s) => s.status === 'done' || s.status === 'skipped').length;
+    const progress = status === 'done' ? 100 : steps.length ? Math.round((done / steps.length) * 100) : 0;
     getDb()
-      .prepare('update import_job set status=?, stats=?, error=?, ai_used=?, finished_at=? where id=?')
-      .run(status, toJson(stats), error, b(aiUsed), nowIso(), id);
+      .prepare(
+        'update import_job set status=?, stats=?, error=?, ai_used=?, finished_at=?, steps=?, progress=? where id=?',
+      )
+      .run(status, toJson(stats), error, b(aiUsed), nowIso(), toJson(steps), progress, id);
   },
   addCandidate(input: {
     jobId: string;
