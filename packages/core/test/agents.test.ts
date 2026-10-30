@@ -1,4 +1,4 @@
-import { test, before, after } from 'node:test';
+﻿import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, type Server } from 'node:http';
 import type { LlmConfig } from '../src/config.ts';
@@ -6,6 +6,11 @@ import type { PlatformRecord } from '../src/schema/asset.ts';
 import type { NormalizedDraft } from '../src/import/types.ts';
 import { parseCurl } from '../src/import/curl.ts';
 import { specToDraft } from '../src/import/normalize.ts';
+// 探测会真实出网：测试指向本机假上游，必须显式允许私网出网
+process.env.ALLOW_PRIVATE_EGRESS = 'true';
+// 桩模型也在本机：LLM 出网同样要显式允许私网
+process.env.LLM_ALLOW_PRIVATE = 'true';
+
 import { probeSkipReason, probeDrafts } from '../src/agents/probe.ts';
 import { analyzeDrafts } from '../src/agents/analyze.ts';
 import { nameDrafts, sanitizeName } from '../src/agents/naming.ts';

@@ -88,19 +88,65 @@ export function collectSecretRefs(value: unknown, out = new Set<string>()): Set<
 
 export type SecretResolver = (name: string) => string | null;
 
-/** 把 ${secret:NAME} 替换为明文（仅出网瞬间调用） */
-export function resolveSecretRefs<T>(value: T, resolver: SecretResolver): T {
+/**
+ * 密钥引用授权策略。
+ *
+ * 真实事故：`body.example` / `defaultHeaders` 里的任意 `${secret:NAME}` 都会被无条件解析，
+ * 于是匿名者只要知道密钥名（列表接口就能枚举），就能让网关把 vault 里的**任意**密钥
+ * 解密出来塞进请求体，再写进可回读的站内存储。
+ *
+ * 现在的规则（两层）：
+ *   1. 结构性位置才允许出现 `${secret:...}`：
+ *        - 参数声明 `params[].default`（并带 secretRef，或名字是鉴权类头）
+ *        - 平台 `authConfig` / `defaultHeaders`
+ *      像 `body.example` 这种"示例/预览"位置一律不许解析。
+ *   2. 只有被**显式声明**的密钥名才允许解析：`params[].secretRef`、
+ *      平台 `authConfig.secretRef` / `passwordRef`、以及 `defaultHeaders` 里出现过的名字。
+ *
+ * 这样"按名任意取密文"就不成立了：未声明的名字直接 403。
+ */
+export type SecretPolicy = {
+  allowed: Set<string>;
+  /** 记录策略来源，报错时能说清是哪个位置越权 */
+  source: Map<string, string>;
+};
+
+export function makeSecretPolicy(): SecretPolicy {
+  return { allowed: new Set(), source: new Map() };
+}
+
+export function allowSecret(policy: SecretPolicy, name: string, why: string): void {
+  if (!name) return;
+  if (!policy.allowed.has(name)) {
+    policy.allowed.add(name);
+    policy.source.set(name, why);
+  }
+}
+
+/**
+ * 把 `${secret:NAME}` 替换为明文（仅出网瞬间调用）。
+ * 带 policy 时只解析白名单内的名字；不在白名单直接抛错，绝不"顺手解密"。
+ */
+export function resolveSecretRefs<T>(value: T, resolver: SecretResolver, policy?: SecretPolicy): T {
   if (typeof value === 'string') {
     return value.replace(SECRET_REF_RE, (_all, name: string) => {
+      if (policy && !policy.allowed.has(name)) {
+        const e = new Error(`密钥引用未获授权：${name}`) as Error & { code: string; status: number };
+        e.code = 'secret_ref_forbidden';
+        e.status = 403;
+        throw e;
+      }
       const v = resolver(name);
       if (v === null) throw new Error(`缺少密钥: ${name}`);
       return v;
     }) as unknown as T;
   }
-  if (Array.isArray(value)) return value.map((v) => resolveSecretRefs(v, resolver)) as unknown as T;
+  if (Array.isArray(value)) return value.map((v) => resolveSecretRefs(v, resolver, policy)) as unknown as T;
   if (value && typeof value === 'object') {
     const out: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) out[k] = resolveSecretRefs(v, resolver);
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = resolveSecretRefs(v, resolver, policy);
+    }
     return out as unknown as T;
   }
   return value;

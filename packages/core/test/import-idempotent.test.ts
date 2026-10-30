@@ -1,3 +1,6 @@
+﻿// 测试用假上游在本机回环：显式打开私网出网开关（生产默认关闭）
+process.env.ALLOW_PRIVATE_EGRESS = 'true';
+
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 

@@ -63,7 +63,9 @@ export function buildMockUpstream(): FastifyInstance {
 
 const isMain = process.argv[1] && /mock-upstream[\\/]src[\\/]index\.ts$/.test(process.argv[1]);
 if (isMain) {
-  const port = Number(process.env.MOCK_PORT ?? 8899);
+  // 默认端口刻意选不常见的：8899 常被本机其它软件（如小米音频共享）占用，
+  // 撞上后会用别人的服务跑验收，报出一堆假失败。
+  const port = Number(process.env.MOCK_PORT ?? 18899);
   const app = buildMockUpstream();
   await app.listen({ port, host: '127.0.0.1' });
   console.log(`mock upstream: http://127.0.0.1:${port}`);

@@ -4,9 +4,10 @@ import { Badge, DiffBadge, MethodBadge } from '../components/Badge.tsx';
 import { Empty, ErrorBox, Loading } from '../components/Empty.tsx';
 import { ConfirmDialog } from '../components/Modal.tsx';
 import { useToast } from '../components/Toast.tsx';
-import { formatTime } from '../format.ts';
-import { bumpData, errorMessage, useResource } from '../hooks.ts';
-import type { Candidate, ImportJob, ImportStep } from '../types.ts';
+import { formatTime, shortId } from '../format.ts';
+import { bumpData, errorMessage, useDataRev, useResource } from '../hooks.ts';
+import { IMPORT_KIND_LABEL } from '../types.ts';
+import type { Candidate, ImportJob, ImportKind, ImportStep } from '../types.ts';
 
 /** 任务状态 → 中文 + 颜色 */
 function jobStatusView(status: string): { label: string; tone: 'green' | 'orange' | 'red' | 'gray' | 'purple' } {
@@ -43,7 +44,8 @@ function publishable(cands: Candidate[]): Candidate[] {
 
 export function JobsPage() {
   const toast = useToast();
-  const jobs = useResource(() => api.import.jobs(), []);
+  const rev = useDataRev();
+  const jobs = useResource(() => api.import.jobs(), [rev]);
   /** SSE 推来的最新列表；为 null 时回退到初始拉取结果 */
   const [live, setLive] = useState<ImportJob[] | null>(null);
   const [openId, setOpenId] = useState<string | null>(null);
@@ -54,8 +56,11 @@ export function JobsPage() {
   /** 按 jobId 缓存候选，展开时才拉 */
   const [cands, setCands] = useState<Record<string, Candidate[]>>({});
   const [loadingCands, setLoadingCands] = useState('');
+  const [candsError, setCandsError] = useState<Record<string, string | null>>({});
   const [publishing, setPublishing] = useState('');
   const [busyCand, setBusyCand] = useState('');
+  /** 刚发布的候选 → 生成的接口 id，用于「去改」直达编辑抽屉 */
+  const [acceptedEndpoints, setAcceptedEndpoints] = useState<Record<string, string>>({});
 
   const list = live ?? jobs.data ?? [];
 
@@ -110,18 +115,26 @@ export function JobsPage() {
     running: list.filter((j) => j.status === 'running' || j.status === 'queued').length,
   };
 
-  /** 拉某个任务的候选 */
+  /** 拉某个任务的候选：15 秒拿不到就报错，不再无限转圈 */
   const loadCands = async (jobId: string) => {
     setLoadingCands(jobId);
+    setCandsError((prev) => ({ ...prev, [jobId]: null }));
+    let timer = 0;
     try {
-      const detail = await api.import.job(jobId);
+      const timeout = new Promise<never>((_, reject) => {
+        timer = window.setTimeout(() => reject(new Error('候选加载超时（15 秒）')), 15000);
+      });
+      const detail = await Promise.race([api.import.job(jobId), timeout]);
       const parsed = (Array.isArray(detail.candidates) ? detail.candidates : [])
         .map((item) => normalizeCandidate(item))
         .filter((item): item is Candidate => item !== null);
       setCands((prev) => ({ ...prev, [jobId]: parsed }));
     } catch (err) {
-      toast.error(errorMessage(err));
+      const text = errorMessage(err);
+      setCandsError((prev) => ({ ...prev, [jobId]: text }));
+      toast.error(text);
     } finally {
+      window.clearTimeout(timer);
       setLoadingCands('');
     }
   };
@@ -151,14 +164,17 @@ export function JobsPage() {
   const acceptOne = async (job: ImportJob, cand: Candidate) => {
     setBusyCand(cand.id);
     try {
-      await api.import.accept(cand.id);
+      const res = await api.import.accept(cand.id);
+      if (res.endpointId) {
+        setAcceptedEndpoints((prev) => ({ ...prev, [cand.id]: res.endpointId }));
+      }
       setCands((prev) => ({
         ...prev,
         [job.id]: (prev[job.id] ?? []).map((c) =>
           c.id === cand.id ? { ...c, decision: 'accept' as const } : c,
         ),
       }));
-      toast.success('已发布');
+      toast.success('已发布，需要调整就点「去改」');
       reload();
       bumpData();
     } catch (err) {
@@ -206,18 +222,20 @@ export function JobsPage() {
   if (jobs.error) return <ErrorBox message={jobs.error} />;
 
   return (
-    <section className="page">
+    <div>
       <header className="page-head">
         <div>
-          <h1>整理记录</h1>
-          <p className="dim">
+          <h1 className="page-title">整理记录</h1>
+          <div className="page-sub">
             每次一键整理都会留下一条记录。任务在后台跑，切页面、刷新都不会中断；
             <b>整理完在这里直接发布</b>，不用回到导入页。
-          </p>
+          </div>
         </div>
-        <button type="button" className="btn" onClick={() => reload()}>
-          刷新
-        </button>
+        <div className="page-actions">
+          <button type="button" className="btn ghost" onClick={() => reload()}>
+            刷新
+          </button>
+        </div>
       </header>
 
       <div className="chips">
@@ -273,7 +291,7 @@ export function JobsPage() {
                       <td>
                         <Badge tone={view.tone}>{view.label}</Badge>
                       </td>
-                      <td className="mono small">{job.kind || '-'}</td>
+                      <td className="small">{job.kind ? (IMPORT_KIND_LABEL[job.kind as ImportKind] ?? job.kind) : '-'}</td>
                       <td className="mono small">{job.siteCount ?? 0}</td>
                       <td className="small">
                         {job.status === 'failed' ? (
@@ -286,7 +304,9 @@ export function JobsPage() {
                           </span>
                         )}
                       </td>
-                      <td className="small mono">{job.progress ?? 0}%</td>
+                      <td className="small mono">
+                        {job.status === 'done' ? 100 : (job.progress ?? 0)}%
+                      </td>
                       <td>
                         <div className="row-actions">
                           {canPublish ? (
@@ -357,6 +377,20 @@ export function JobsPage() {
                               <div className="dim small">加载候选…</div>
                             ) : null}
 
+                            {candsError[job.id] ? (
+                              <div className="notice warn">
+                                候选加载失败：{candsError[job.id]}
+                                <button
+                                  type="button"
+                                  className="btn sm ghost"
+                                  style={{ marginLeft: 8 }}
+                                  onClick={() => void loadCands(job.id)}
+                                >
+                                  重试
+                                </button>
+                              </div>
+                            ) : null}
+
                             {jobCands && jobCands.length > 0 ? (
                               <div className="job-cands">
                                 <div className="job-cands-head">
@@ -400,15 +434,27 @@ export function JobsPage() {
                                           {payload.pathTemplate}
                                         </span>
                                         <div className="row-actions">
-                                          <button
-                                            type="button"
-                                            className="btn sm"
-                                            disabled={decided || blocked || busyCand === cand.id}
-                                            onClick={() => void acceptOne(job, cand)}
-                                            title={blocked ? '重复或冲突的候选不能直接发布' : undefined}
-                                          >
-                                            发布
-                                          </button>
+                                          {acceptedEndpoints[cand.id] ? (
+                                            <button
+                                              type="button"
+                                              className="btn ghost sm"
+                                              onClick={() => {
+                                                window.location.hash = `/endpoints?edit=${acceptedEndpoints[cand.id]}`;
+                                              }}
+                                            >
+                                              去改
+                                            </button>
+                                          ) : (
+                                            <button
+                                              type="button"
+                                              className="btn sm"
+                                              disabled={decided || blocked || busyCand === cand.id}
+                                              onClick={() => void acceptOne(job, cand)}
+                                              title={blocked ? '重复或冲突的候选不能直接发布' : undefined}
+                                            >
+                                              发布
+                                            </button>
+                                          )}
                                           <button
                                             type="button"
                                             className="btn ghost sm"
@@ -435,8 +481,8 @@ export function JobsPage() {
                               </div>
                             ) : null}
 
-                            <div className="mono dim small">
-                              job {job.id} · 创建 {formatTime(job.createdAt ?? '')}
+                            <div className="mono dim small" title={job.id}>
+                              任务 {shortId(job.id)} · 创建 {formatTime(job.createdAt ?? '')}
                               {job.finishedAt ? ` · 结束 ${formatTime(job.finishedAt)}` : ''}
                             </div>
                           </div>
@@ -459,13 +505,13 @@ export function JobsPage() {
         busy={busy}
         message={
           <span>
-            确认删除 <b className="mono">{removing?.id}</b> 及其候选？
+            确认删除任务 <b className="mono">{shortId(removing?.id)}</b> 及其候选？
             已经发布的接口不受影响。
           </span>
         }
         onCancel={() => setRemoving(null)}
         onConfirm={() => void doRemove()}
       />
-    </section>
+    </div>
   );
 }

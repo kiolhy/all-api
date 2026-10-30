@@ -3,11 +3,12 @@ import assert from 'node:assert/strict';
 import { buildMockUpstream } from '../../../fixtures/mock-upstream/src/index.ts';
 
 process.env.MASTER_KEY = Buffer.alloc(32, 7).toString('base64');
+process.env.ALLOW_PRIVATE_EGRESS = 'true';
 
 const { resetDbForTests, closeDb } = await import('../src/db/client.ts');
 const { platforms, endpoints, tools, secrets } = await import('../src/db/repos.ts');
 const { encryptSecret } = await import('../src/secrets/vault.ts');
-const { invokeTool, testEndpoint } = await import('../src/invoke/engine.ts');
+const { invokeTool, testEndpoint, issueConsoleGrant } = await import('../src/invoke/engine.ts');
 const { publishAndCompile, runImport } = await import('../src/import/pipeline.ts');
 
 let upstream: Awaited<ReturnType<typeof buildMockUpstream>>;
@@ -180,7 +181,7 @@ test('端到端：网关自己的密钥被上游回显时必须挡住', async ()
 test('控制台通道可见上游主机', async () => {
   const platform = platforms.bySlug('mock')!;
   const ep = endpoints.bySlug(platform.id, 'get_user')!;
-  const result = await testEndpoint(ep.id, { userId: '1' });
+  const result = await testEndpoint(ep.id, { userId: '1' }, issueConsoleGrant({ id: 'acc_test', role: 'admin' }));
   assert.equal(result.ok, true);
   assert.match(result.meta.upstreamHost, /127\.0\.0\.1/);
 });
@@ -302,7 +303,13 @@ test('一键整理：curl → 候选 → 自动发布 → 可调用', async () =
   });
   assert.equal(job.stats.parsed, 1);
   assert.equal(job.stats.candidates, 1);
-  const ep = endpoints.list({ platformId: platforms.bySlug('fromcurl')!.id })[0]!;
+  const platform = platforms.bySlug('fromcurl')!;
+  // 自动创建的平台一律 allowPrivate=false（真实事故：整理 curl 就会建出
+  // 指向 127.0.0.1 的私网平台）。测试里的假上游在本机，所以要显式打开，
+  // 这与管理员在平台页手动放行是同一个动作。
+  assert.equal(platform.allowPrivate, false, '自动导入不允许自动开私网');
+  platforms.update(platform.id, { allowPrivate: true });
+  const ep = endpoints.list({ platformId: platform.id })[0]!;
   const tool = tools.byEndpoint(ep.id)!;
   const result = await invokeTool(tool.name, { limit: 1 }, 'rest');
   assert.equal(result.ok, true, JSON.stringify(result.data));
@@ -320,7 +327,7 @@ test('exposure=closed 对外不可调用，但控制台可试运行', async () =
   assert.equal(outside.ok, false);
   assert.equal((outside.data as { error: { code: string } }).error.code, 'endpoint_closed');
 
-  const consoleRun = await testEndpoint(ep.id, {});
+  const consoleRun = await testEndpoint(ep.id, {}, issueConsoleGrant({ id: 'acc_test', role: 'admin' }));
   assert.equal(consoleRun.ok, true, '控制台试运行应放行');
 });
 

@@ -2,13 +2,13 @@ import { useState } from 'react';
 import { api } from '../api.ts';
 import { Badge } from '../components/Badge.tsx';
 import { Empty, ErrorBox } from '../components/Empty.tsx';
-import { Checkbox, Field, Select, TextArea, TextInput } from '../components/Field.tsx';
+import { Checkbox, Field, FormGrid, Select, TextArea, TextInput } from '../components/Field.tsx';
 import { ConfirmDialog, Modal } from '../components/Modal.tsx';
 import { DataTable } from '../components/Table.tsx';
 import type { Column } from '../components/Table.tsx';
 import { useToast } from '../components/Toast.tsx';
 import { copyText, formatTime } from '../format.ts';
-import { bumpData, errorMessage, useDataRev, useResource } from '../hooks.ts';
+import { bumpData, errorMessage, useDataRev, usePlatforms, useResource } from '../hooks.ts';
 import type { ApiKey, CreatedApiKey, KeyEndpoint, QuotaPeriod, SecretMeta } from '../types.ts';
 import { QUOTA_PERIODS, QUOTA_PERIOD_LABEL } from '../types.ts';
 
@@ -23,7 +23,7 @@ export function SecretsPage() {
   const rev = useDataRev();
   const secrets = useResource(() => api.secrets.list(), [rev]);
   const keys = useResource(() => api.apiKeys.list(), [rev]);
-  const platforms = useResource(() => api.platforms.list(), [rev]);
+  const platforms = usePlatforms();
 
   const [name, setName] = useState('');
   const [value, setValue] = useState('');
@@ -244,6 +244,7 @@ export function SecretsPage() {
     },
     {
       key: 'actions',
+      sortable: false,
       title: '操作',
       width: '90px',
       align: 'right',
@@ -345,6 +346,7 @@ export function SecretsPage() {
     },
     {
       key: 'actions',
+      sortable: false,
       title: '操作',
       width: '280px',
       align: 'right',
@@ -413,7 +415,7 @@ export function SecretsPage() {
         <div className="card-body">
           <div className="inline-form">
             <Field label="名称">
-              <TextInput mono value={name} onChange={(event) => setName(event.target.value)} placeholder="GITHUB_TOKEN" />
+              <TextInput mono value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：GITHUB_TOKEN" />
             </Field>
             <Field label="值">
               <TextInput
@@ -425,7 +427,7 @@ export function SecretsPage() {
               />
             </Field>
             <Field label="提示（可选）">
-              <TextInput value={hint} onChange={(event) => setHint(event.target.value)} placeholder="readonly PAT" />
+              <TextInput value={hint} onChange={(event) => setHint(event.target.value)} placeholder="例如：readonly PAT" />
             </Field>
             <div className="inline-form-action">
               <button type="button" className="btn primary" onClick={() => void createSecret()} disabled={savingSecret}>
@@ -458,7 +460,7 @@ export function SecretsPage() {
         <div className="card-body">
           <div className="inline-form">
             <Field label="标签">
-              <TextInput value={label} onChange={(event) => setLabel(event.target.value)} placeholder="我的 MCP 客户端" />
+              <TextInput value={label} onChange={(event) => setLabel(event.target.value)} placeholder="例如：我的 MCP 客户端" />
             </Field>
             <Field label="额度上限" hint="0 = 不限">
               <TextInput
@@ -602,7 +604,7 @@ export function SecretsPage() {
           </>
         }
       >
-        <div className="form-row">
+        <FormGrid>
           <Field label="标签">
             <TextInput value={editLabel} onChange={(e) => setEditLabel(e.target.value)} />
           </Field>
@@ -646,7 +648,7 @@ export function SecretsPage() {
               placeholder={'203.0.113.10\n10.0.0.0/8'}
             />
           </Field>
-        </div>
+        </FormGrid>
         <div className="dim small">
           当前已用 <span className="mono">{editingKey?.quotaUsed ?? 0}</span> · 累计调用{' '}
           <span className="mono">{editingKey?.callCount ?? 0}</span> 次

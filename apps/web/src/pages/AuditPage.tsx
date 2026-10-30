@@ -14,6 +14,7 @@ export function AuditPage() {
   const rev = useDataRev();
   const [tool, setTool] = useState('');
   const [limit, setLimit] = useState('100');
+  const [reasonFilter, setReasonFilter] = useState('');
   const toolDebounced = useDebounced(tool, 350);
   const limitNumber = Number(limit) || 100;
 
@@ -24,6 +25,23 @@ export function AuditPage() {
 
   const rows = audits.data ?? [];
   const failedCount = rows.filter((row) => !row.ok).length;
+  const failRate = rows.length > 0 ? Math.round((failedCount / rows.length) * 100) : 0;
+
+  /** 失败原因归类：同一个 errorCode 归一类，没错误码就用状态码 */
+  const reasons = (() => {
+    const map = new Map<string, number>();
+    for (const row of rows) {
+      if (row.ok) continue;
+      const key = row.errorCode || (row.status ? `http_${row.status}` : 'unknown');
+      map.set(key, (map.get(key) ?? 0) + 1);
+    }
+    return [...map.entries()].sort((a, b) => b[1] - a[1]);
+  })();
+
+  const reasonOf = (row: Audit): string =>
+    row.errorCode || (row.status ? `http_${row.status}` : 'unknown');
+
+  const visibleRows = reasonFilter ? rows.filter((row) => !row.ok && reasonOf(row) === reasonFilter) : rows;
 
   const columns: Column<Audit>[] = [
     {
@@ -105,9 +123,47 @@ export function AuditPage() {
         </Field>
         <div className="filter-summary dim small">
           共 {rows.length} 条 · 失败 {failedCount} 条
+          {rows.length > 0 ? `（${failRate}%）` : ''}
+          {reasonFilter ? ` · 已筛 ${visibleRows.length} 条` : ''}
           {audits.loading ? ' · 加载中…' : ''}
         </div>
       </section>
+
+      {reasons.length > 0 ? (
+        <section className="card">
+          <div className="card-head">
+            <div className="card-title">失败原因</div>
+            <div className="card-sub">
+              按错误码归类，失败率超过 30% 就该查了；点一个标签只看这一类
+            </div>
+          </div>
+          <div className="reason-chips">
+            {reasons.map(([key, count]) => (
+              <button
+                key={key}
+                type="button"
+                className={`reason-chip${reasonFilter === key ? ' active' : ''}`}
+                onClick={() => setReasonFilter(reasonFilter === key ? '' : key)}
+              >
+                <span className="mono">{key}</span>
+                <span className="reason-count">{count}</span>
+                <span className="dim small">{Math.round((count / rows.length) * 100)}%</span>
+              </button>
+            ))}
+            {reasonFilter ? (
+              <button type="button" className="btn sm ghost" onClick={() => setReasonFilter('')}>
+                清除筛选
+              </button>
+            ) : null}
+          </div>
+          {failRate >= 30 ? (
+            <div className="notice warn" style={{ margin: '0 12px 12px' }}>
+              失败率 {failRate}%，最高的一类是 <b className="mono">{reasons[0]![0]}</b>（{reasons[0]![1]} 条）。
+              先看上游是否限流/鉴权失效，再看网关出网配置。
+            </div>
+          ) : null}
+        </section>
+      ) : null}
 
       {audits.error ? (
         <ErrorBox message={audits.error} onRetry={audits.reload} />
@@ -115,9 +171,11 @@ export function AuditPage() {
         <section className="card">
           <DataTable
             columns={columns}
-            rows={rows}
+            rows={visibleRows}
             rowKey={(row) => row.id}
             loading={audits.loading}
+            pageSize={50}
+            defaultSort={{ key: 'ts', dir: 'desc' }}
             rowClassName={(row) => (row.ok ? '' : 'row-failed')}
             renderExpanded={(row) => (
               <div className="expand-panel">

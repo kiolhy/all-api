@@ -947,9 +947,9 @@ export const audit = {
     const id = newId('au');
     getDb()
       .prepare(
-        `insert into audit_log (id, ts, request_id, api_key_id, channel, tool_name, endpoint_id, status,
+        `insert into audit_log (id, ts, request_id, api_key_id, channel, actor, tool_name, endpoint_id, status,
            ok, latency_ms, upstream_host, error_code, req_meta, resp_meta)
-         values (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+         values (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
       )
       .run(
         id,
@@ -957,6 +957,7 @@ export const audit = {
         rec.requestId,
         rec.apiKeyId ?? null,
         rec.channel,
+        rec.actor ?? null,
         rec.toolName,
         rec.endpointId ?? null,
         rec.status,
@@ -1003,6 +1004,7 @@ export const audit = {
       requestId: s(r.request_id),
       apiKeyId: r.api_key_id ? s(r.api_key_id) : null,
       channel: s(r.channel, 'rest') as AuditRecord['channel'],
+      actor: r.actor ? s(r.actor) : null,
       toolName: s(r.tool_name),
       endpointId: r.endpoint_id ? s(r.endpoint_id) : null,
       status: n(r.status),

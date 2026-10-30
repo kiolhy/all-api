@@ -7,8 +7,8 @@ import { JsonView } from '../components/JsonView.tsx';
 import { Modal } from '../components/Modal.tsx';
 import { useToast } from '../components/Toast.tsx';
 import { formatTime } from '../format.ts';
-import { bumpData, errorMessage, useDataRev, useResource } from '../hooks.ts';
-import { IMPORT_KINDS } from '../types.ts';
+import { bumpData, errorMessage, useDataRev, usePlatforms, useResource } from '../hooks.ts';
+import { IMPORT_KINDS, IMPORT_KIND_LABEL } from '../types.ts';
 import type { Candidate, ImportJob, ImportKind, ImportRunResult, ImportStats } from '../types.ts';
 
 type KindChoice = 'auto' | ImportKind;
@@ -28,17 +28,17 @@ const CURL_PLACEHOLDER = `curl 'https://api.example.com/v1/users?limit=20' \\
 export function ImportPage() {
   const toast = useToast();
   const rev = useDataRev();
-  const platforms = useResource(() => api.platforms.list(), [rev]);
+  const platforms = usePlatforms();
   const jobs = useResource(() => api.import.jobs().catch(() => [] as ImportJob[]), [rev]);
   // /api/health 是公开端点，普通成员也能读，用来判断 LLM 是否可用
-  const health = useResource(() => api.health().catch(() => null), []);
+  const health = useResource(() => api.health().catch(() => null), [rev]);
   const llmOff = health.data?.llm?.enabled === false;
 
   const [text, setText] = useState('');
   const [kind, setKind] = useState<KindChoice>('auto');
   const [platformSlug, setPlatformSlug] = useState('');
   const [useAi, setUseAi] = useState(true);
-  const [probeUpstream, setProbeUpstream] = useState(true);
+  const [probeUpstream, setProbeUpstream] = useState(false);
   const [autoPublish, setAutoPublish] = useState(false);
 
   const [running, setRunning] = useState(false);
@@ -162,7 +162,7 @@ export function ImportPage() {
       }
       if (event.job && event.job.id === trackedRef.current) apply(event.job);
     }, ac.signal).catch(() => {
-      /* 流断了：保持现状，用户可点「重新载入」 */
+      /* 流断了：保持现状，用户可点「刷新」 */
     });
 
     return () => {
@@ -171,7 +171,9 @@ export function ImportPage() {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
-  const run = async () => {    if (!text.trim()) {
+
+  const run = async () => {
+    if (!text.trim()) {
       toast.error('先粘贴点内容：curl / HAR / OpenAPI 都行');
       return;
     }
@@ -299,7 +301,7 @@ export function ImportPage() {
                   <option value="auto">自动识别</option>
                   {IMPORT_KINDS.map((item) => (
                     <option key={item} value={item}>
-                      {item}
+                      {IMPORT_KIND_LABEL[item]}
                     </option>
                   ))}
                 </Select>
@@ -317,21 +319,19 @@ export function ImportPage() {
                   ))}
                 </Select>
               </Field>
-              <Field label="选项">
-                <div className="inline-checks">
-                  <Checkbox checked={useAi} onChange={setUseAi} label="用 AI 分析" />
-                  <Checkbox
-                    checked={probeUpstream}
-                    onChange={setProbeUpstream}
-                    label="真实探测（只读接口）"
-                  />
-                  <Checkbox
-                    checked={autoPublish}
-                    onChange={setAutoPublish}
-                    label="直接发布（整理完立即上线接口）"
-                  />
-                </div>
-              </Field>
+            </div>
+            <div className="inline-checks options-row">
+              <Checkbox checked={useAi} onChange={setUseAi} label="用 AI 分析用途和字段" />
+              <Checkbox
+                checked={probeUpstream}
+                onChange={setProbeUpstream}
+                label="真实探测上游（只读接口，会真的发一次请求）"
+              />
+              <Checkbox
+                checked={autoPublish}
+                onChange={setAutoPublish}
+                label="整理完直接发布"
+              />
             </div>
             {useAi && llmOff ? (
               <div className="notice warn">
@@ -397,7 +397,7 @@ export function ImportPage() {
                 onClick={() => activeJobId && void loadJob(activeJobId)}
                 disabled={!activeJobId}
               >
-                重新载入
+                刷新
               </button>
             </div>
           </div>

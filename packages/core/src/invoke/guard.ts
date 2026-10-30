@@ -28,8 +28,40 @@ export function isPrivateHost(hostname: string): boolean {
   return false;
 }
 
-/** 出网前校验：host 白名单 + 私网策略 */
-export function assertEgressAllowed(platform: PlatformRecord, target: URL, allowPrivateGlobal: boolean): void {
+/** 本进程自己的监听地址（用于识别「网关请求自己」的回环目标） */
+export type SelfTargets = {
+  host: string;
+  port: number;
+};
+
+function selfAliases(self?: SelfTargets): Set<string> {
+  const out = new Set<string>(['127.0.0.1', 'localhost', '::1', '0.0.0.0']);
+  if (self && (self.host === '0.0.0.0' || self.host === '::')) {
+    out.add(self.host);
+  } else if (self?.host) {
+    out.add(self.host.toLowerCase());
+  }
+  return out;
+}
+
+/**
+ * 出网前校验：host 白名单 + 私网策略 + 自引用拦截
+ *
+ * 真实事故链路：攻击者建一个 baseUrl=`http://127.0.0.1:8778` 的平台 + 设 allowPrivate=true，
+ * 就能让网关对自己发请求（把密钥明文写进站内会话、或直接打自己的 /api），
+ * 于是 egress 策略被请求体控制 —— 这绝对不能由用户可写配置决定。
+ *
+ * 现在：
+ *   1. allowPrivate 由服务端策略决定（平台保存时已被强制归 false）
+ *   2. 就算全局开了 ALLOW_PRIVATE_EGRESS，也不允许指向本进程自己的监听端口
+ *   3. 私网地址默认全禁
+ */
+export function assertEgressAllowed(
+  platform: PlatformRecord,
+  target: URL,
+  allowPrivateGlobal: boolean,
+  self?: SelfTargets,
+): void {
   const baseHost = (() => {
     try {
       return new URL(platform.baseUrl).hostname.toLowerCase();
@@ -49,7 +81,17 @@ export function assertEgressAllowed(platform: PlatformRecord, target: URL, allow
       403,
     );
   }
-  const privateOk = allowPrivateGlobal || platform.allowPrivate;
+
+  // 自引用：不管 allowPrivate 怎么配，都不许网关请求自己
+  if (self) {
+    const targetPort = target.port ? Number(target.port) : target.protocol === 'https:' ? 443 : 80;
+    const alias = selfAliases(self);
+    if (targetPort === Number(self.port) && alias.has(host)) {
+      throw hubError('egress_self_blocked', `禁止让网关请求自身（${host}:${targetPort}）`, 403);
+    }
+  }
+
+  const privateOk = allowPrivateGlobal && platform.allowPrivate;
   if (!privateOk && isPrivateHost(host)) {
     throw hubError('egress_private_blocked', `禁止访问私网地址 ${host}`, 403);
   }

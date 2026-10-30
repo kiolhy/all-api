@@ -1,11 +1,32 @@
 import { useState } from 'react';
 import { authApi, ApiError, type Session } from '../api.ts';
 
+/** 默认账号提示只在没成功登录过之前显示，避免把默认密码一直挂在登录页上 */
+const HINT_KEY = 'hub.login.hint';
+
+function readHintVisible(): boolean {
+  try {
+    return window.localStorage.getItem(HINT_KEY) !== 'off';
+  } catch {
+    return true;
+  }
+}
+
 export function LoginPage({ onLoggedIn }: { onLoggedIn: (session: Session) => void }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [showHint, setShowHint] = useState(readHintVisible);
+
+  const dismissHint = () => {
+    setShowHint(false);
+    try {
+      window.localStorage.setItem(HINT_KEY, 'off');
+    } catch {
+      /* 隐私模式下写不进去，忽略 */
+    }
+  };
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -18,6 +39,7 @@ export function LoginPage({ onLoggedIn }: { onLoggedIn: (session: Session) => vo
     setBusy(true);
     try {
       const result = await authApi.login(username.trim(), password);
+      dismissHint();
       onLoggedIn({ token: result.token, account: result.account });
     } catch (err) {
       const e = err as ApiError;
@@ -69,10 +91,23 @@ export function LoginPage({ onLoggedIn }: { onLoggedIn: (session: Session) => vo
           {busy ? '登录中…' : '登录'}
         </button>
 
-        <div className="login-tip">
-          首次使用默认账号 <code className="mono">admin</code> / <code className="mono">admin123456</code>，
-          登录后请立即在「修改密码」里更换。
-        </div>
+        {showHint ? (
+          <div className="login-tip">
+            <span className="login-tip-text">
+              首次使用默认账号 <code className="mono">admin</code> /{' '}
+              <code className="mono">admin123456</code>，登录后请立即到「设置 → 修改密码」更换。
+            </span>
+            <button
+              type="button"
+              className="login-tip-close"
+              title="不再显示这条提示"
+              aria-label="不再显示"
+              onClick={dismissHint}
+            >
+              ×
+            </button>
+          </div>
+        ) : null}
       </form>
     </div>
   );

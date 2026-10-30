@@ -67,6 +67,8 @@ export function ChatPage() {
   const toast = useToast();
   const rev = useDataRev();
   const sessions = useResource(() => api.chat.sessions(), [rev]);
+  const health = useResource(() => api.health().catch(() => null), [rev]);
+  const llmOff = health.data ? health.data.llm?.enabled === false : false;
 
   const [activeId, setActiveId] = useState('');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -80,6 +82,8 @@ export function ChatPage() {
 
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement | null>(null);
+  /** 自动新建的会话不用回拉历史，否则会把刚发出去的乐观消息冲掉 */
+  const skipLoadRef = useRef('');
 
   useEffect(() => {
     if (!activeId && sessions.data && sessions.data.length > 0) {
@@ -90,6 +94,12 @@ export function ChatPage() {
   useEffect(() => {
     if (!activeId) {
       setMessages([]);
+      return;
+    }
+    if (skipLoadRef.current === activeId) {
+      skipLoadRef.current = '';
+      setMessagesLoading(false);
+      setMessagesError(null);
       return;
     }
     let alive = true;
@@ -119,16 +129,19 @@ export function ChatPage() {
     bottomRef.current?.scrollIntoView({ block: 'end' });
   }, [messages]);
 
-  const createSession = async () => {
+  const createSession = async (options: { silent?: boolean; skipLoad?: boolean } = {}) => {
     setCreating(true);
     try {
       const created = await api.chat.createSession();
-      toast.success('新会话已创建');
+      if (!options.silent) toast.success('新会话已创建');
+      if (options.skipLoad) skipLoadRef.current = created.id;
       sessions.reload();
       setActiveId(created.id);
-      setMessages([]);
+      if (!options.skipLoad) setMessages([]);
+      return created.id as string;
     } catch (err) {
       toast.error(errorMessage(err));
+      return null;
     } finally {
       setCreating(false);
     }
@@ -156,9 +169,19 @@ export function ChatPage() {
   const send = async () => {
     const content = input.trim();
     if (!content || sending) return;
-    if (!activeId) {
-      toast.error('先新建一个会话');
+
+    // LLM 没启用就别装作在生成：直接说清楚去哪儿开
+    if (llmOff) {
+      toast.error('LLM 还没启用：去「设置 → 模型」填 baseUrl / model / apiKey 并保存，再回来对话');
       return;
+    }
+
+    // 还没有会话就顺手建一个，不让用户先去点「新建会话」
+    let sessionId = activeId;
+    if (!sessionId) {
+      const createdId = await createSession({ silent: true, skipLoad: true });
+      if (!createdId) return;
+      sessionId = createdId;
     }
 
     setInput('');
@@ -176,11 +199,22 @@ export function ChatPage() {
     const controller = new AbortController();
     abortRef.current = controller;
 
+    // 看门狗：30 秒没有任何一帧就主动断开，别让「生成中…」挂两分钟
+    let lastBeat = Date.now();
+    let timedOut = false;
+    const watchdog = window.setInterval(() => {
+      if (Date.now() - lastBeat < 30000) return;
+      timedOut = true;
+      window.clearInterval(watchdog);
+      controller.abort();
+    }, 2000);
+
     try {
       await streamChatMessage(
-        activeId,
+        sessionId,
         content,
         (event) => {
+          lastBeat = Date.now();
           if (event.type === 'delta') {
             setMessages((prev) =>
               prev.map((message) =>
@@ -238,7 +272,9 @@ export function ChatPage() {
         controller.signal,
       );
     } catch (err) {
-      const text = errorMessage(err);
+      const text = timedOut
+        ? '模型 30 秒没有任何响应，已断开。检查「设置 → 模型」的 baseUrl / model / apiKey 是否可用。'
+        : errorMessage(err);
       toast.error(text);
       setMessages((prev) =>
         prev.map((message) =>
@@ -248,6 +284,7 @@ export function ChatPage() {
         ),
       );
     } finally {
+      window.clearInterval(watchdog);
       abortRef.current = null;
       setSending(false);
       sessions.reload();
@@ -279,6 +316,14 @@ export function ChatPage() {
           </button>
         </div>
       </header>
+
+      {llmOff ? (
+        <div className="notice warn">
+          LLM 还没启用，对话发不出去。先去
+          <a className="link" href="#/settings"> 设置 → 模型 </a>
+          填 baseUrl / model / apiKey 并保存。
+        </div>
+      ) : null}
 
       <div className="chat-layout">
         <aside className="card session-panel">
@@ -333,12 +378,8 @@ export function ChatPage() {
             {messagesLoading ? <Loading label="加载消息…" /> : null}
             {!messagesLoading && messages.length === 0 ? (
               <Empty
-                title={activeId ? '开始对话' : '先新建一个会话'}
-                hint={
-                  activeId
-                    ? '试试：「列出所有已发布的工具，并调用其中一个看看返回」。'
-                    : '点右上角「新建会话」，然后在下方输入框提问。'
-                }
+                title="开始对话"
+                hint="直接提问就行，第一条消息会自动建一个会话。试试：「列出所有已发布的工具，并调用其中一个看看返回」。"
               />
             ) : null}
 
@@ -398,8 +439,8 @@ export function ChatPage() {
               className="textarea mono composer-input"
               rows={3}
               value={input}
-              placeholder={activeId ? 'Enter 发送，Shift+Enter 换行' : '先新建会话…'}
-              disabled={!activeId || sending}
+              placeholder="Enter 发送，Shift+Enter 换行"
+              disabled={sending}
               onChange={(event) => setInput(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === 'Enter' && !event.shiftKey) {
@@ -419,7 +460,7 @@ export function ChatPage() {
                 type="button"
                 className="btn primary"
                 onClick={() => void send()}
-                disabled={!activeId || sending || !input.trim()}
+                disabled={sending || !input.trim()}
               >
                 发送
               </button>

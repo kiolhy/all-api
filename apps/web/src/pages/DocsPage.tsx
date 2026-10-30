@@ -12,7 +12,7 @@ import {
   looksLikeUpstreamPath,
   schemaOf,
 } from '../handoff.ts';
-import { errorMessage, useResource } from '../hooks.ts';
+import { errorMessage, useDataRev, useResource } from '../hooks.ts';
 import type { ApiKey, Tool } from '../types.ts';
 
 /* ────────────────────────── 小件 ────────────────────────── */
@@ -104,8 +104,9 @@ function ToolRow(props: { tool: Tool }) {
 
 export function DocsPage() {
   const toast = useToast();
-  const tools = useResource(() => api.tools.list(), []);
-  const keys = useResource(() => api.apiKeys.list().catch(() => [] as ApiKey[]), []);
+  const rev = useDataRev();
+  const tools = useResource(() => api.tools.list(), [rev]);
+  const keys = useResource(() => api.apiKeys.list().catch(() => [] as ApiKey[]), [rev]);
 
   const [keyInput, setKeyInput] = useState('');
   const [freshKey, setFreshKey] = useState('');

@@ -366,6 +366,7 @@ export type AuditStreamEvent =
 export async function streamAudit(
   onEvent: (event: AuditStreamEvent) => void,
   signal?: AbortSignal,
+  onOpen?: () => void,
 ): Promise<void> {
   let res: Response;
   try {
@@ -380,6 +381,9 @@ export async function streamAudit(
   }
 
   if (!res.ok) throw await toApiError(res);
+
+  // 响应头到手就算连上了，不用等第一帧数据
+  onOpen?.();
 
   try {
     await pumpSse(res, (data) => {

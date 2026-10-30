@@ -13,19 +13,25 @@ import { copyText, formatTime } from '../format.ts';
 import { bumpData, errorMessage, useDataRev, useResource } from '../hooks.ts';
 import type { Tool } from '../types.ts';
 
-const MCP_COMMAND = 'node';
-const MCP_ARGS = ['D:/project/各个平台接口/apps/mcp/src/index.ts'];
-
+/**
+ * MCP 客户端配置。
+ * 地址取当前站点 origin（对外部署就是公开域名），路径用相对仓库根的写法，
+ * 不再把开发机的绝对路径和 127.0.0.1 写死进去。
+ */
 function buildMcpConfig(): string {
+  const origin =
+    typeof window !== 'undefined' && window.location.origin
+      ? window.location.origin
+      : 'https://your-hub.example.com';
   return JSON.stringify(
     {
       mcpServers: {
         'api-asset-hub': {
-          command: MCP_COMMAND,
-          args: MCP_ARGS,
+          command: 'node',
+          args: ['apps/mcp/src/index.ts'],
           env: {
-            HUB_BASE_URL: 'http://127.0.0.1:8778',
-            HUB_API_KEY: 'hub_live_把控制台「密钥」页生成的 key 粘这里',
+            HUB_BASE_URL: origin,
+            HUB_API_KEY: 'hub_live_xxxxxxxx（控制台「密钥与令牌」页生成）',
           },
         },
       },
@@ -42,11 +48,11 @@ export function ToolsPage() {
 
   const [busyId, setBusyId] = useState('');
   const [rebuilding, setRebuilding] = useState(false);
-  const [cacheDraft, setCacheDraft] = useState<Record<string, string>>({});
 
   const [editing, setEditing] = useState<Tool | null>(null);
   const [name, setName] = useState('');
-  const [title, setTitle] = useState('');  const [description, setDescription] = useState('');
+  const [title, setTitle] = useState('');
+  const [description, setDescription] = useState('');
   const [cacheTtl, setCacheTtl] = useState('0');
   const [namespace, setNamespace] = useState('');
   const [saving, setSaving] = useState(false);
@@ -66,6 +72,10 @@ export function ToolsPage() {
 
   const patch = async (tool: Tool, body: Parameters<typeof api.tools.update>[1], successText: string) => {
     setBusyId(tool.id);
+    // 先本地翻转，点一下立刻有反馈；失败再靠 reload 回滚
+    tools.setData((prev) =>
+      prev ? prev.map((item) => (item.id === tool.id ? { ...item, ...body } : item)) : prev,
+    );
     try {
       await api.tools.update(tool.id, body);
       toast.success(successText);
@@ -73,6 +83,7 @@ export function ToolsPage() {
       bumpData();
     } catch (err) {
       toast.error(errorMessage(err));
+      tools.reload();
     } finally {
       setBusyId('');
     }
@@ -123,30 +134,6 @@ export function ToolsPage() {
     }
   };
 
-  const commitCacheTtl = async (tool: Tool) => {
-    const draft = cacheDraft[tool.id];
-    if (draft === undefined) return;
-    const ttl = Number(draft);
-    if (!Number.isFinite(ttl) || ttl < 0) {
-      toast.error('cacheTtl 需要是 ≥0 的整数');
-      return;
-    }
-    if (Math.round(ttl) === tool.cacheTtl) {
-      setCacheDraft((prev) => {
-        const next = { ...prev };
-        delete next[tool.id];
-        return next;
-      });
-      return;
-    }
-    await patch(tool, { cacheTtl: Math.round(ttl) }, `${tool.name} 缓存改为 ${Math.round(ttl)}s`);
-    setCacheDraft((prev) => {
-      const next = { ...prev };
-      delete next[tool.id];
-      return next;
-    });
-  };
-
   const columns: Column<Tool>[] = [
     {
       key: 'name',
@@ -185,22 +172,13 @@ export function ToolsPage() {
     },
     {
       key: 'cacheTtl',
-      title: 'cacheTtl',
-      width: '110px',
+      title: '缓存',
+      width: '100px',
       align: 'right',
       render: (tool) => (
-        <input
-          className="input mono sm-input"
-          value={cacheDraft[tool.id] ?? String(tool.cacheTtl ?? 0)}
-          onChange={(event) =>
-            setCacheDraft((prev) => ({ ...prev, [tool.id]: event.target.value }))
-          }
-          onBlur={() => void commitCacheTtl(tool)}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter') void commitCacheTtl(tool);
-          }}
-          inputMode="numeric"
-        />
+        <span className="mono dim">
+          {tool.cacheTtl ? `${tool.cacheTtl}s` : '不缓存'}
+        </span>
       ),
     },
     {
@@ -222,6 +200,7 @@ export function ToolsPage() {
     },
     {
       key: 'actions',
+      sortable: false,
       title: '操作',
       width: '120px',
       align: 'right',
@@ -264,6 +243,8 @@ export function ToolsPage() {
             rows={tools.data ?? []}
             rowKey={(tool) => tool.id}
             loading={tools.loading}
+            pageSize={20}
+            defaultSort={{ key: 'updatedAt', dir: 'desc' }}
             renderExpanded={(tool) => (
               <div className="expand-panel">
                 <div className="expand-grid">
@@ -284,10 +265,22 @@ export function ToolsPage() {
                         <span className="kv-val mono">{String(tool.annotations?.idempotent ?? true)}</span>
                       </div>
                       <div className="kv-row">
-                        <span className="kv-key">endpointId</span>
-                        <span className="kv-val mono dim">{tool.endpointId || '—'}</span>
+                        <span className="kv-key">上游接口</span>
+                        <span className="kv-val mono dim">{tool.endpointSlug || '—'}</span>
                       </div>
                     </div>
+                    <button
+                      type="button"
+                      className="btn sm ghost"
+                      style={{ marginTop: 12 }}
+                      onClick={() => {
+                        window.location.hash = tool.endpointSlug
+                          ? `/endpoints?q=${encodeURIComponent(tool.endpointSlug)}`
+                          : '/endpoints';
+                      }}
+                    >
+                      去接口资产里改
+                    </button>
                   </div>
                   <div>
                     <div className="sub-title">inputSchema</div>
@@ -340,7 +333,12 @@ export function ToolsPage() {
             span
             hint="调用方唯一看得到的标识。别写上游域名、路径或端口 —— 网关把地址掩了，名字里带出来等于白掩"
           >
-            <TextInput mono value={name} onChange={(event) => setName(event.target.value)} placeholder="query_orders" />
+            <TextInput
+              mono
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              placeholder={editing?.name ? `当前：${editing.name}` : '字母、数字、下划线'}
+            />
           </Field>
           {leakyName ? (
             <div className="notice warn" style={{ gridColumn: '1 / -1' }}>
@@ -354,7 +352,7 @@ export function ToolsPage() {
           <Field label="描述" span>
             <TextArea rows={4} value={description} onChange={(event) => setDescription(event.target.value)} />
           </Field>
-          <Field label="cacheTtl（秒）" hint="0 表示不缓存">
+          <Field label="缓存秒数" hint="0 表示不缓存；改完点右下角「保存」才生效">
             <TextInput mono value={cacheTtl} onChange={(event) => setCacheTtl(event.target.value)} />
           </Field>
           <Field label="namespace" hint="覆盖默认描述前缀，可留空">
@@ -366,7 +364,7 @@ export function ToolsPage() {
       <Modal
         open={mcpOpen}
         title="MCP 客户端配置"
-        subtitle="贴到 Claude Desktop / Cursor 的 mcpServers 里，env.HUB_API_KEY 用控制台生成的 key"
+        subtitle="贴到 Claude Desktop / Cursor 的 mcpServers 里；args 用仓库相对路径，客户端的工作目录不在仓库根时改成实际路径"
         onClose={() => setMcpOpen(false)}
         width={640}
         footer={

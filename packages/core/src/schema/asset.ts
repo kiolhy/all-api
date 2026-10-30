@@ -230,6 +230,8 @@ export const AuditRecordSchema = z.object({
   latencyMs: z.number().int(),
   upstreamHost: z.string(),
   errorCode: z.string().nullable(),
+  /** 已认证主体：account:<id> / key:<id> / admin-token / anonymous（审计归因） */
+  actor: z.string().nullable().default(null),
   reqMeta: z.record(z.unknown()),
   respMeta: z.record(z.unknown()),
 });
@@ -242,13 +244,13 @@ export type Role = z.infer<typeof RoleSchema>;
 
 export const UsernameSchema = z
   .string()
-  .min(2)
-  .max(32)
+  .min(2, '用户名至少 2 位')
+  .max(32, '用户名最多 32 位')
   .regex(/^[a-zA-Z0-9_.-]+$/, '用户名只能包含字母、数字、下划线、点、连字符');
 
 export const AccountInputSchema = z.object({
   username: UsernameSchema,
-  password: z.string().min(6, '密码至少 6 位').max(128),
+  password: z.string().min(6, '密码至少 6 位').max(128, '密码最多 128 位'),
   role: RoleSchema.default('member'),
 });
 export type AccountInput = z.infer<typeof AccountInputSchema>;

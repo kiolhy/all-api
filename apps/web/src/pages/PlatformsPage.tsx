@@ -17,9 +17,24 @@ import type { Column } from '../components/Table.tsx';
 import { useToast } from '../components/Toast.tsx';
 import { JsonView } from '../components/JsonView.tsx';
 import { formatTime, parseJsonOr, splitList } from '../format.ts';
-import { errorMessage, useDataRev, useResource } from '../hooks.ts';
-import { AUTH_KINDS } from '../types.ts';
-import type { AuthKind, Platform, PlatformInput, PlatformTestResult } from '../types.ts';
+import { bumpData, errorMessage, useDataRev, usePlatforms, useResource } from '../hooks.ts';
+import { AUTH_KINDS, AUTH_KIND_HINT, AUTH_KIND_LABEL } from '../types.ts';
+import type {
+  AuthKind,
+  Platform,
+  PlatformInput,
+  PlatformTestResult,
+  SecretMeta,
+} from '../types.ts';
+
+/** 每种鉴权方式允许出现在 authConfig 里的键，切方式时据此清理 */
+const ALLOWED_AUTH_KEYS: Record<AuthKind, string[]> = {
+  none: [],
+  bearer: ['secretRef'],
+  header: ['secretRef', 'header'],
+  query: ['secretRef', 'queryParam'],
+  basic: ['username', 'passwordRef'],
+};
 
 interface PlatformFormState {
   slug: string;
@@ -121,7 +136,8 @@ function buildInput(form: PlatformFormState): {
 export function PlatformsPage() {
   const toast = useToast();
   const rev = useDataRev();
-  const platforms = useResource(() => api.platforms.list(), [rev]);
+  const platforms = usePlatforms();
+  const secrets = useResource(() => api.secrets.list().catch(() => [] as SecretMeta[]), [rev]);
 
   const [editing, setEditing] = useState<Platform | 'new' | null>(null);
   const [form, setForm] = useState<PlatformFormState>(EMPTY_FORM);
@@ -157,6 +173,60 @@ export function PlatformsPage() {
     setForm((prev) => ({ ...prev, ...patch }));
   };
 
+  /* ── 鉴权配置：按 authKind 拆成普通输入框，不再让用户手写 JSON ── */
+
+  const authObj = (() => {
+    try {
+      return parseJsonOr<Record<string, unknown>>(form.authConfig, {});
+    } catch {
+      return {} as Record<string, unknown>;
+    }
+  })();
+
+  const authText = (key: string, fallback = ''): string =>
+    typeof authObj[key] === 'string' ? (authObj[key] as string) : fallback;
+
+  /** 只写当前 authKind 用得上的键，其余丢掉，避免残留脏配置 */
+  const setAuth = (key: string, value: string) => {
+    const allowed = ALLOWED_AUTH_KEYS[form.authKind] ?? [];
+    const next: Record<string, unknown> = {};
+    for (const name of allowed) {
+      const current = name === key ? value : authText(name);
+      if (current) next[name] = current;
+    }
+    patchForm({ authConfig: JSON.stringify(next, null, 2) });
+  };
+
+  const changeAuthKind = (kind: AuthKind) => {
+    // 密钥名能跨方式复用，其余键按新方式重建
+    const carried = authText('secretRef') || authText('passwordRef');
+    const next: Record<string, unknown> = {};
+    if (kind === 'basic') {
+      if (carried) next.passwordRef = carried;
+      const user = authText('username');
+      if (user) next.username = user;
+    } else if (kind !== 'none' && carried) {
+      next.secretRef = carried;
+      if (kind === 'header' && authText('header')) next.header = authText('header');
+      if (kind === 'query' && authText('queryParam')) next.queryParam = authText('queryParam');
+    }
+    patchForm({ authKind: kind, authConfig: JSON.stringify(next, null, 2) });
+  };
+
+  /** 密钥名输入框：可直接写，也能从已存的 vault 密钥里选 */
+  const secretNameField = (label: string, key: string, placeholder: string) => (
+    <Field label={label} hint="填「密钥与令牌」里已存的名字，或直接新建一个" span>
+      <TextInput
+        mono
+        list="vault-secret-names"
+        value={authText(key)}
+        onChange={(event) => setAuth(key, event.target.value)}
+        placeholder={placeholder}
+      />
+    </Field>
+  );
+
+
   const save = async () => {
     const { input, errors: nextErrors } = buildInput(form);
     setErrors(nextErrors);
@@ -171,7 +241,7 @@ export function PlatformsPage() {
         toast.success(`平台 ${input.slug} 已创建`);
       }
       setEditing(null);
-      platforms.reload();
+      bumpData();
     } catch (err) {
       toast.error(errorMessage(err));
     } finally {
@@ -206,7 +276,7 @@ export function PlatformsPage() {
       } else {
         toast.error(`没抓到标题：${res.error || '站点首页没有 <title>'}`);
       }
-      platforms.reload();
+      bumpData();
     } catch (err) {
       toast.error(errorMessage(err));
     } finally {
@@ -221,7 +291,7 @@ export function PlatformsPage() {
       await api.platforms.remove(pendingDelete.id);
       toast.success(`平台 ${pendingDelete.slug} 已删除`);
       setPendingDelete(null);
-      platforms.reload();
+      bumpData();
     } catch (err) {
       toast.error(errorMessage(err));
     } finally {
@@ -281,6 +351,7 @@ export function PlatformsPage() {
     },
     {
       key: 'actions',
+      sortable: false,
       title: '操作',
       width: '300px',
       align: 'right',
@@ -340,6 +411,7 @@ export function PlatformsPage() {
             rows={platforms.data ?? []}
             rowKey={(row) => row.id}
             loading={platforms.loading}
+            pageSize={20}
             empty={
               <Empty
                 title="还没有平台"
@@ -378,14 +450,14 @@ export function PlatformsPage() {
               mono
               value={form.slug}
               onChange={(event) => patchForm({ slug: event.target.value })}
-              placeholder="github"
+              placeholder="例如：github"
             />
           </Field>
           <Field label="名称" error={errors.name}>
             <TextInput
               value={form.name}
               onChange={(event) => patchForm({ name: event.target.value })}
-              placeholder="GitHub REST API"
+              placeholder="例如：GitHub REST API"
             />
           </Field>
           <Field label="baseUrl" error={errors.baseUrl} span>
@@ -393,17 +465,17 @@ export function PlatformsPage() {
               mono
               value={form.baseUrl}
               onChange={(event) => patchForm({ baseUrl: event.target.value })}
-              placeholder="https://api.github.com"
+              placeholder="例如：https://api.github.com"
             />
           </Field>
-          <Field label="鉴权方式">
+          <Field label="鉴权方式" hint={AUTH_KIND_HINT[form.authKind]}>
             <Select
               value={form.authKind}
-              onChange={(event) => patchForm({ authKind: event.target.value as AuthKind })}
+              onChange={(event) => changeAuthKind(event.target.value as AuthKind)}
             >
               {AUTH_KINDS.map((kind) => (
                 <option key={kind} value={kind}>
-                  {kind}
+                  {AUTH_KIND_LABEL[kind]}
                 </option>
               ))}
             </Select>
@@ -415,22 +487,69 @@ export function PlatformsPage() {
               label={form.allowPrivate ? '允许访问 127.0.0.1 / 内网段' : '仅公网'}
             />
           </Field>
-          <Field label="authConfig（JSON）" error={errors.authConfig} span>
-            <JsonEditor
-              value={form.authConfig}
-              onChange={(next) => patchForm({ authConfig: next })}
-              rows={4}
-              error={errors.authConfig}
-              placeholder={'{"token": "${secret:GITHUB_TOKEN}"}'}
-            />
-          </Field>
-          <Field label="defaultHeaders（JSON）" error={errors.defaultHeaders} span>
+
+          {form.authKind === 'none' ? (
+            <div className="notice" style={{ gridColumn: '1 / -1' }}>
+              这个平台不校验凭据。如果上游其实要密钥，上面选一种鉴权方式即可。
+            </div>
+          ) : null}
+
+          {form.authKind === 'bearer' ? secretNameField('Token 密钥名', 'secretRef', 'GITHUB_TOKEN') : null}
+
+          {form.authKind === 'header' ? (
+            <>
+              <Field label="请求头名" hint="凭据放进哪个头">
+                <TextInput
+                  mono
+                  value={authText('header', 'X-API-Key')}
+                  onChange={(event) => setAuth('header', event.target.value)}
+                  placeholder="X-API-Key"
+                />
+              </Field>
+              {secretNameField('密钥名', 'secretRef', 'MY_API_KEY')}
+            </>
+          ) : null}
+
+          {form.authKind === 'query' ? (
+            <>
+              <Field label="URL 参数名" hint="凭据拼在哪个查询参数上">
+                <TextInput
+                  mono
+                  value={authText('queryParam', 'key')}
+                  onChange={(event) => setAuth('queryParam', event.target.value)}
+                  placeholder="key"
+                />
+              </Field>
+              {secretNameField('密钥名', 'secretRef', 'MY_API_KEY')}
+            </>
+          ) : null}
+
+          {form.authKind === 'basic' ? (
+            <>
+              <Field label="用户名">
+                <TextInput
+                  value={authText('username')}
+                  onChange={(event) => setAuth('username', event.target.value)}
+                  placeholder="例如：user"
+                />
+              </Field>
+              {secretNameField('密码密钥名', 'passwordRef', 'MY_PASSWORD')}
+            </>
+          ) : null}
+
+          <datalist id="vault-secret-names">
+            {(secrets.data ?? []).map((item) => (
+              <option key={item.name} value={item.name} />
+            ))}
+          </datalist>
+
+          <Field label="默认请求头（JSON）" error={errors.defaultHeaders} span hint="可选。不填就不加额外请求头">
             <JsonEditor
               value={form.defaultHeaders}
               onChange={(next) => patchForm({ defaultHeaders: next })}
               rows={3}
               error={errors.defaultHeaders}
-              placeholder={'{"accept": "application/vnd.github+json"}'}
+              placeholder={'例如：{"accept": "application/vnd.github+json"}'}
             />
           </Field>
           <Field label="出网白名单" hint="逗号/换行分隔，留空表示只允许 baseUrl 的 host" span>
@@ -438,7 +557,7 @@ export function PlatformsPage() {
               mono
               value={form.egressAllowHosts}
               onChange={(event) => patchForm({ egressAllowHosts: event.target.value })}
-              placeholder="api.github.com, raw.githubusercontent.com"
+              placeholder="例如：api.github.com, raw.githubusercontent.com"
             />
           </Field>
           <Field label="QPS" error={errors.qps}>
@@ -446,7 +565,7 @@ export function PlatformsPage() {
               mono
               value={form.qps}
               onChange={(event) => patchForm({ qps: event.target.value })}
-              placeholder="5"
+              placeholder="默认 5"
             />
           </Field>
           <Field label="每日上限" error={errors.daily}>
@@ -454,7 +573,7 @@ export function PlatformsPage() {
               mono
               value={form.daily}
               onChange={(event) => patchForm({ daily: event.target.value })}
-              placeholder="10000"
+              placeholder="默认 10000"
             />
           </Field>
           <Field label="备注" span>

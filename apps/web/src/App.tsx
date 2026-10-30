@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { authApi, getSession, setSession, setUnauthorizedHandler, type Session } from './api.ts';
+import { ChangePasswordDialog } from './components/ChangePasswordDialog.tsx';
 import { ToastProvider } from './components/Toast.tsx';
 import { useHashRoute } from './hooks.ts';
 import { AccountsPage } from './pages/AccountsPage.tsx';
@@ -62,11 +63,32 @@ function Shell() {
   const { path, navigate } = useHashRoute();
   const [session, setSessionState] = useState<Session | null>(() => getSession());
   const [menuOpen, setMenuOpen] = useState(false);
+  const [passwordOpen, setPasswordOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
 
   const clearSession = useCallback(() => {
     setSession(null);
     setSessionState(null);
   }, []);
+
+  // 点菜单外面 / 按 Esc 关闭。不用遮罩层，否则用户按钮本身也被盖住点不动
+  useEffect(() => {
+    if (!menuOpen) return;
+    const onDown = (event: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMenuOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [menuOpen]);
 
   // 任何请求 401 都统一退出到登录页
   useEffect(() => {
@@ -163,7 +185,7 @@ function Shell() {
           </span>
         </div>
 
-        <div className="user-area">
+        <div className="user-area" ref={menuRef}>
           <button
             type="button"
             className="user-chip"
@@ -180,24 +202,21 @@ function Shell() {
           </button>
 
           {menuOpen ? (
-            <>
-              <div className="menu-backdrop" onClick={() => setMenuOpen(false)} />
-              <div className="user-menu" role="menu">
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => {
-                    setMenuOpen(false);
-                    navigate('/settings');
-                  }}
-                >
-                  修改密码
-                </button>
-                <button type="button" role="menuitem" className="danger" onClick={doLogout}>
-                  退出登录
-                </button>
-              </div>
-            </>
+            <div className="user-menu" role="menu">
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  setMenuOpen(false);
+                  setPasswordOpen(true);
+                }}
+              >
+                修改密码
+              </button>
+              <button type="button" role="menuitem" className="danger" onClick={doLogout}>
+                退出登录
+              </button>
+            </div>
           ) : null}
         </div>
       </header>
@@ -235,6 +254,12 @@ function Shell() {
 
         <main className="content">{renderPage()}</main>
       </div>
+
+      <ChangePasswordDialog
+        open={passwordOpen}
+        onClose={() => setPasswordOpen(false)}
+        onChanged={clearSession}
+      />
     </div>
   );
 }

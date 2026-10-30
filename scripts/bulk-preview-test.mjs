@@ -1,5 +1,7 @@
 /** 验证「全部采纳」前的预览数字与服务端实际行为一致 */
-const B = 'http://127.0.0.1:8778';
+const B = process.env.GATEWAY_BASE ?? 'http://127.0.0.1:8778';
+// 假上游地址由 verify.mjs 通过 MOCK_BASE 注入（默认避开 8899）
+const MOCK = process.env.MOCK_BASE ?? 'http://127.0.0.1:18899';
 const j = async (r) => {
   const t = await r.text();
   try { return JSON.parse(t); } catch { return t; }
@@ -24,9 +26,9 @@ const beforePlatformIds = new Set(
 // 路径带时间戳，保证每次跑都是全新接口，不被上一轮判重干扰
 const tag = Date.now().toString(36);
 const text = [
-  `curl 'http://127.0.0.1:8899/api/v1/slow-${tag}'`,
-  `curl 'http://127.0.0.1:8899/api/v1/slow-${tag}'`,
-  `curl 'http://127.0.0.1:8899/api/v1/redirect-${tag}'`,
+  `curl '${MOCK}/api/v1/slow-${tag}'`,
+  `curl '${MOCK}/api/v1/slow-${tag}'`,
+  `curl '${MOCK}/api/v1/redirect-${tag}'`,
 ].join('\n');
 
 const run = await j(await fetch(`${B}/api/import`, {

@@ -19,6 +19,7 @@ import { makeResolver } from '../invoke/engine.ts';
 import { scrubSecrets } from '../invoke/redact.ts';
 import { loadConfig } from '../config.ts';
 import { safeJsonParse } from '../util/json.ts';
+import { safeFetch } from '../security/safe-fetch.ts';
 
 export type ProbeResult =
   | {
@@ -83,33 +84,6 @@ function draftEndpoint(input: {
   };
 }
 
-async function readCapped(res: Response, maxBytes: number): Promise<{ text: string; truncated: boolean }> {
-  const reader = res.body?.getReader();
-  if (!reader) return { text: '', truncated: false };
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  let truncated = false;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (!value) continue;
-    total += value.byteLength;
-    if (total > maxBytes) {
-      chunks.push(value.subarray(0, Math.max(0, value.byteLength - (total - maxBytes))));
-      truncated = true;
-      break;
-    }
-    chunks.push(value);
-  }
-  const merged = new Uint8Array(chunks.reduce((n, c) => n + c.byteLength, 0));
-  let offset = 0;
-  for (const c of chunks) {
-    merged.set(c, offset);
-    offset += c.byteLength;
-  }
-  return { text: new TextDecoder().decode(merged), truncated };
-}
-
 export async function probeEndpoint(input: {
   platform: PlatformRecord;
   method: string;
@@ -136,20 +110,18 @@ export async function probeEndpoint(input: {
     assertSafePath(target.pathname);
     assertEgressAllowed(input.platform, target, cfg.allowPrivateEgress);
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), cfg.egressTimeoutMs);
-    let res: Response;
-    try {
-      res = await fetch(built.url, {
-        method: built.method,
-        headers: built.headers,
-        body: built.body ?? undefined,
-        redirect: 'manual',
-        signal: controller.signal,
-      });
-    } finally {
-      clearTimeout(timer);
-    }
+    // 受控出网：DNS 解析后按地址判定，连接锁 IP，不跟随跳转
+    const res = await safeFetch(built.url, {
+      method: built.method,
+      headers: built.headers,
+      body: built.body ?? undefined,
+      allowPrivate: cfg.allowPrivateEgress && input.platform.allowPrivate,
+      allowHosts: input.platform.egressAllowHosts.length
+        ? input.platform.egressAllowHosts
+        : [new URL(input.platform.baseUrl).hostname],
+      timeoutMs: cfg.egressTimeoutMs,
+      maxBytes: PROBE_MAX_BYTES,
+    });
 
     if (res.status >= 300 && res.status < 400) {
       return {
@@ -160,7 +132,7 @@ export async function probeEndpoint(input: {
       };
     }
 
-    const { text, truncated } = await readCapped(res, PROBE_MAX_BYTES);
+    const { text, truncated } = res;
     let body: unknown = safeJsonParse(text, text);
 
     // 样本原样保留（控制台里要看到真实数据），只挡网关自己注入的密钥明文。
@@ -179,7 +151,7 @@ export async function probeEndpoint(input: {
       latencyMs: Date.now() - started,
       body,
       truncated,
-      errorResponse: !res.ok,
+      errorResponse: res.status < 200 || res.status >= 300,
     };
   } catch (err) {
     return {

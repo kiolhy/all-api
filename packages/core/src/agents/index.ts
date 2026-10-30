@@ -31,9 +31,59 @@ export type AgentOptions = {
   maxProbes?: number;
   /** 探测并发 */
   probeConcurrency?: number;
+  /** 单个 AI 步骤的超时（毫秒），默认 45 秒 */
+  aiTimeoutMs?: number;
+  /** AI 步骤失败后重试几次，默认 1 */
+  aiRetries?: number;
   /** 步骤回调，用来给前端报进度 */
   onStep?: (key: 'probe' | 'analyze' | 'naming', patch: StepPatch) => void;
 };
+
+const DEFAULT_AI_TIMEOUT_MS = Number(process.env.AI_STEP_TIMEOUT_MS ?? 45000);
+const DEFAULT_AI_RETRIES = Number(process.env.AI_STEP_RETRIES ?? 1);
+
+/**
+ * 给 AI 步骤套一层超时 + 重试 + 降级。
+ *
+ * 卡住过的场景：上游模型不返回，整条一键整理就挂在那里，控制台只看到「分析中」。
+ * 现在超时或报错都会重试一次，两次都不行就返回 fallback，把原因写进 errors，
+ * 让流程继续往下走，界面上能看到「降级了、为什么」。
+ */
+async function runWithGuard<T>(
+  label: string,
+  run: () => Promise<T>,
+  fallback: T,
+  errors: string[],
+  timeoutMs: number,
+  retries: number,
+): Promise<T> {
+  const once = async (): Promise<T> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`${label}超时（${Math.round(timeoutMs / 1000)} 秒没有返回）`)),
+        timeoutMs,
+      );
+    });
+    try {
+      return await Promise.race([run(), timeout]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
+
+  const attempts = Math.max(0, retries) + 1;
+  const reasons: string[] = [];
+  for (let i = 0; i < attempts; i += 1) {
+    try {
+      return await once();
+    } catch (err) {
+      reasons.push(`第 ${i + 1} 次：${(err as Error).message}`);
+    }
+  }
+  errors.push(`${label}失败，已降级为规则解析（${reasons.join('；')}）`);
+  return fallback;
+}
 
 export type StepPatch = {
   status?: 'pending' | 'running' | 'done' | 'failed' | 'skipped';
@@ -88,7 +138,15 @@ export async function runAgents(
   let analyze = emptyAnalyze;
   if (opts.analyze !== false) {
     opts.onStep?.('analyze', { status: 'running', detail: '正在判断用途并写备注' });
-    analyze = await analyzeDrafts(cfg, drafts, probe.outcomes);
+    const fallback: AnalysisStats = { aiUsed: false, analyzed: 0, skipped: drafts.length, errors: [] };
+    analyze = await runWithGuard(
+      'AI 分析',
+      () => analyzeDrafts(cfg, drafts, probe.outcomes),
+      fallback,
+      fallback.errors,
+      opts.aiTimeoutMs ?? DEFAULT_AI_TIMEOUT_MS,
+      opts.aiRetries ?? DEFAULT_AI_RETRIES,
+    );
     opts.onStep?.('analyze', {
       status: analyze.analyzed === 0 ? 'skipped' : 'done',
       detail:
@@ -104,7 +162,21 @@ export async function runAgents(
   let naming = emptyNaming;
   if (opts.naming !== false) {
     opts.onStep?.('naming', { status: 'running', detail: '正在生成对外名' });
-    naming = await nameDrafts(cfg, drafts);
+    const fallback: NamingStats = {
+      aiUsed: false,
+      named: 0,
+      skipped: drafts.length,
+      errors: [],
+      renamed: [],
+    };
+    naming = await runWithGuard(
+      'AI 命名',
+      () => nameDrafts(cfg, drafts),
+      fallback,
+      fallback.errors,
+      opts.aiTimeoutMs ?? DEFAULT_AI_TIMEOUT_MS,
+      opts.aiRetries ?? DEFAULT_AI_RETRIES,
+    );
     opts.onStep?.('naming', {
       status: naming.named === 0 ? 'skipped' : 'done',
       detail:

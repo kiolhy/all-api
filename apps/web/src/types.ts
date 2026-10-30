@@ -69,6 +69,56 @@ export const PARAM_TYPES: readonly ParamType[] = [
 ];
 export const IMPORT_KINDS: readonly ImportKind[] = ['curl', 'har', 'openapi', 'text'];
 
+/* ────────────────────────── 枚举中文名 ────────────────────────── */
+
+export const AUTH_KIND_LABEL: Record<AuthKind, string> = {
+  none: '无需鉴权',
+  bearer: 'Bearer Token',
+  header: '自定义请求头',
+  query: 'URL 参数',
+  basic: 'Basic 认证',
+};
+
+export const AUTH_KIND_HINT: Record<AuthKind, string> = {
+  none: '上游不需要凭据',
+  bearer: '请求头 Authorization: Bearer <token>',
+  header: '自定义请求头名 + 值',
+  query: '把凭据拼在 URL 参数里',
+  basic: '用户名 + 密码，Base64 后放 Authorization',
+};
+
+export const ENDPOINT_STATUS_LABEL: Record<EndpointStatus, string> = {
+  draft: '草稿',
+  published: '已发布',
+  archived: '已归档',
+};
+
+export const PARAM_LOCATION_LABEL: Record<ParamLocation, string> = {
+  path: '路径',
+  query: '查询串',
+  header: '请求头',
+  body: '请求体',
+  cookie: 'Cookie',
+};
+
+export const SIDE_EFFECT_LABEL: Record<SideEffect, string> = {
+  read: '只读',
+  write: '写入',
+};
+
+export const SENSITIVITY_LABEL: Record<Sensitivity, string> = {
+  low: '低',
+  medium: '中',
+  high: '高',
+};
+
+export const IMPORT_KIND_LABEL: Record<ImportKind, string> = {
+  curl: 'curl 命令',
+  har: 'HAR 抓包',
+  openapi: 'OpenAPI 文档',
+  text: '纯文本',
+};
+
 /* ────────────────────────── 参数 / 请求体 / 响应 ────────────────────────── */
 
 export interface Param {
@@ -428,6 +478,9 @@ export interface LlmSettings {
   concurrency?: number;
   /** 想开但缺 apiKey 时为 true */
   blockedByApiKey?: boolean;
+  /** 谁在什么时候改的配置 */
+  updatedAt?: string | null;
+  updatedBy?: string | null;
 }
 
 export interface EgressSettings {

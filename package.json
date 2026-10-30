@@ -20,8 +20,13 @@
     "typecheck": "tsc -p tsconfig.json",
     "test": "node --test \"packages/core/test/*.test.ts\"",
     "verify": "node scripts/verify.mjs",
+    "verify:security": "node scripts/security-regression.mjs",
+    "audit:leaks": "node --env-file-if-exists=.env scripts/scrub-leaks.mjs",
+    "scrub:leaks": "node --env-file-if-exists=.env scripts/scrub-leaks.mjs --apply",
     "mock": "node fixtures/mock-upstream/src/index.ts",
-    "seed": "node --env-file-if-exists=.env scripts/seed.mjs"
+    "seed": "node --env-file-if-exists=.env scripts/seed.mjs",
+    "cleanup:test": "node --env-file-if-exists=.env scripts/cleanup-test-data.mjs",
+    "cleanup:test:apply": "node --env-file-if-exists=.env scripts/cleanup-test-data.mjs --apply"
   },
   "devDependencies": {
     "@types/node": "^24.3.0",

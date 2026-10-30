@@ -5,7 +5,7 @@ import { ErrorBox } from '../components/Empty.tsx';
 import { DataTable } from '../components/Table.tsx';
 import type { Column } from '../components/Table.tsx';
 import { formatMs, formatNumber, formatTime, percent, shortId } from '../format.ts';
-import { useResource } from '../hooks.ts';
+import { errorMessage, useDataRev, usePlatforms, useResource } from '../hooks.ts';
 import type { Audit } from '../types.ts';
 
 /** 实时流最多保留多少条，避免长时间开着把内存吃满 */
@@ -45,13 +45,16 @@ const auditColumns: Column<Audit>[] = [
 ];
 
 export function OverviewPage() {
-  const stats = useResource(() => api.stats(), []);
-  const audits = useResource(() => api.audit.list({ limit: 10 }), []);
-  const health = useResource(() => api.health().catch(() => null), []);
+  const rev = useDataRev();
+  const platforms = usePlatforms();
+  const stats = useResource(() => api.stats(), [rev]);
+  const audits = useResource(() => api.audit.list({ limit: 10 }), [rev]);
+  const health = useResource(() => api.health().catch(() => null), [rev]);
 
   /** 实时流里的记录；null 表示还没收到首帧，回退到初始拉取结果 */
   const [live, setLive] = useState<Audit[] | null>(null);
   const [connected, setConnected] = useState(false);
+  const [streamError, setStreamError] = useState<string | null>(null);
   const [paused, setPaused] = useState(false);
   const pausedRef = useRef(paused);
   useEffect(() => {
@@ -68,37 +71,57 @@ export function OverviewPage() {
     }, 3000);
   };
 
-  // 订阅实时流水
+  // 订阅实时流水：断线自动重连（1s → 2s → 4s … 最多 15s），不用手动刷新
   useEffect(() => {
-    const ac = new AbortController();
     let alive = true;
+    let attempt = 0;
+    let controller = new AbortController();
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
 
-    void streamAudit((event) => {
-      if (!alive) return;
-      if (event.type === 'snapshot') {
-        setConnected(true);
-        // 暂停期间不覆盖已有内容
-        if (!pausedRef.current) setLive(event.records);
-        return;
-      }
-      if (pausedRef.current) return;
-      setLive((prev) => {
-        const base = prev ?? [];
-        if (base.some((r) => r.id === event.record.id)) return base;
-        return [event.record, ...base].slice(0, LIVE_LIMIT);
-      });
-      scheduleStatsReload();
-    }, ac.signal)
-      .catch(() => {
-        /* 流断了：保留已收到的记录 */
-      })
-      .finally(() => {
-        if (alive) setConnected(false);
-      });
+    const connect = () => {
+      controller = new AbortController();
+      setStreamError(null);
+      void streamAudit(
+        (event) => {
+          if (!alive) return;
+          if (event.type === 'snapshot') {
+            // 暂停期间不覆盖已有内容
+            if (!pausedRef.current) setLive(event.records);
+            return;
+          }
+          if (pausedRef.current) return;
+          setLive((prev) => {
+            const base = prev ?? [];
+            if (base.some((r) => r.id === event.record.id)) return base;
+            return [event.record, ...base].slice(0, LIVE_LIMIT);
+          });
+          scheduleStatsReload();
+        },
+        controller.signal,
+        () => {
+          attempt = 0;
+          if (alive) setConnected(true);
+        },
+      )
+        .catch((err: unknown) => {
+          if (!alive) return;
+          setStreamError(errorMessage(err));
+        })
+        .finally(() => {
+          if (!alive) return;
+          setConnected(false);
+          attempt += 1;
+          const delay = Math.min(15000, 1000 * 2 ** Math.min(attempt, 4));
+          retryTimer = setTimeout(connect, delay);
+        });
+    };
+
+    connect();
 
     return () => {
       alive = false;
-      ac.abort();
+      controller.abort();
+      if (retryTimer) clearTimeout(retryTimer);
       if (statsTimer.current) {
         clearTimeout(statsTimer.current);
         statsTimer.current = null;
@@ -112,9 +135,11 @@ export function OverviewPage() {
   const data = stats.data;
   const calls = data?.calls;
   const failRate = calls && calls.total > 0 ? percent(calls.failed, calls.total) : '0%';
+  // 平台数统一取共享 store，跟「平台」页和接口页下拉同一份数据
+  const platformCount = platforms.data ? platforms.data.length : data?.platforms;
 
   const metrics: Array<{ label: string; value: string; hint: string; tone?: string }> = [
-    { label: '平台', value: formatNumber(data?.platforms), hint: '已接入平台' },
+    { label: '平台', value: formatNumber(platformCount), hint: '已接入平台' },
     { label: '接口', value: formatNumber(data?.endpoints), hint: '全部接口资产' },
     { label: '已发布', value: formatNumber(data?.published), hint: '可被 AI 调用' },
     { label: '工具', value: formatNumber(data?.tools), hint: 'MCP 工具数' },
@@ -133,13 +158,20 @@ export function OverviewPage() {
             {health.data ? (
               <span className="dim">
                 {' · '}v{health.data.version}
-                {' · '}LLM {health.data.llm?.enabled ? `已启用（${health.data.llm.model || '未命名'}）` : '未启用'}
+                {' · '}
               </span>
+            ) : null}
+            {health.data ? (
+              <Badge tone={health.data.llm?.enabled ? 'green' : 'gray'}>
+                {health.data.llm?.enabled
+                  ? `LLM 已启用 · ${health.data.llm.model || '未指定模型'}`
+                  : 'LLM 未启用'}
+              </Badge>
             ) : null}
           </div>
         </div>
         <div className="page-actions">
-          <button type="button" className="btn ghost" onClick={() => { stats.reload(); audits.reload(); health.reload(); }}>
+          <button type="button" className="btn ghost" onClick={() => { stats.reload(); audits.reload(); health.reload(); platforms.reload(); }}>
             刷新
           </button>
         </div>
@@ -170,7 +202,9 @@ export function OverviewPage() {
               ? '已暂停，新的调用不会进来'
               : connected
                 ? `网关每调用一次实时推一条 · 保留最近 ${LIVE_LIMIT} 条`
-                : '未连接（可点右侧重连）'}
+                : streamError
+                  ? `连接失败：${streamError} · 正在自动重连`
+                  : '正在连接…'}
           </div>
           <div className="card-actions">
             <button type="button" className="btn sm ghost" onClick={() => setPaused((v) => !v)}>
@@ -182,9 +216,11 @@ export function OverviewPage() {
               onClick={() => {
                 audits.reload();
                 stats.reload();
+                health.reload();
+                platforms.reload();
               }}
             >
-              重新载入
+              刷新
             </button>
           </div>
         </div>
@@ -236,8 +272,14 @@ export function OverviewPage() {
           </div>
         </div>
         <div className="card-foot">
-          <Badge tone="gray">提示</Badge>
-          <span className="dim">概览数字来自 `GET /api/stats`，审计来自 `GET /api/audit?limit=10`。</span>
+          {connected ? (
+            <Badge tone="green">实时</Badge>
+          ) : (
+            <Badge tone="gray">已断开</Badge>
+          )}
+          <span className="dim">
+            {paused ? '已暂停刷新，点「继续」恢复' : '新调用会实时出现在上面的流水里'}
+          </span>
         </div>
       </section>
     </>

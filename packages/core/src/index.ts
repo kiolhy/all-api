@@ -2,6 +2,13 @@ export * from './schema/asset.ts';
 export * from './util/json.ts';
 export * from './config.ts';
 
+export * from './security/path-normalize.ts';
+export * from './security/access-control.ts';
+export * from './security/exposure-guard.ts';
+export * from './security/egress.ts';
+export * from './security/safe-fetch.ts';
+export * from './security/dry-run.ts';
+
 export * from './db/client.ts';
 export * from './db/repos.ts';
 

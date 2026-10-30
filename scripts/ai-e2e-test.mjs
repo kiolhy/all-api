@@ -16,7 +16,9 @@
  */
 import { createServer } from 'node:http';
 
-const BASE = 'http://127.0.0.1:8778';
+const BASE = process.env.GATEWAY_BASE ?? 'http://127.0.0.1:8778';
+// 假上游地址由 verify.mjs 通过 MOCK_BASE 注入（默认避开 8899）
+const MOCK = process.env.MOCK_BASE ?? 'http://127.0.0.1:18899';
 let pass = 0;
 let fail = 0;
 const check = (name, cond, extra = '') => {
@@ -33,6 +35,9 @@ const j = async (r) => {
 
 let mode = 'good'; // good | leaky
 let calls = 0;
+
+// 桩模型在本机：LLM 出网要走私网，需要显式开关（生产默认关闭）
+process.env.LLM_ALLOW_PRIVATE ??= 'true';
 
 const stub = createServer((req, res) => {
   let body = '';
@@ -174,8 +179,8 @@ const run = await j(await fetch(`${BASE}/api/import`, {
   method: 'POST', headers: H,
   body: JSON.stringify({
     text: [
-      `curl 'http://127.0.0.1:8899/api/v1/ai-invoices?page=1&limit=20'`,
-      `curl 'http://127.0.0.1:8899/api/v1/ai-members/{id}'`,
+      `curl '${MOCK}/api/v1/ai-invoices?page=1&limit=20'`,
+      `curl '${MOCK}/api/v1/ai-members/{id}'`,
     ].join('\n'),
     kind: 'curl', wait: true, useAi: true, autoPublish: true, probeUpstream: false,
   }),
@@ -252,7 +257,7 @@ mode = 'leaky';
 const run2 = await j(await fetch(`${BASE}/api/import`, {
   method: 'POST', headers: H,
   body: JSON.stringify({
-    text: `curl 'http://127.0.0.1:8899/api/v1/ai-receipts?page=2'`,
+    text: `curl '${MOCK}/api/v1/ai-receipts?page=2'`,
     kind: 'curl', wait: true, useAi: true, autoPublish: true, probeUpstream: false,
   }),
 }));

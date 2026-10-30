@@ -64,7 +64,12 @@ const t0 =
 const hasPage = Boolean(t0.inputSchema?.properties?.page);
 const args = hasPage ? { page: 1 } : {};
 const qs = hasPage ? '?page=1' : '';
-check('工具名不暴露上游', !/8899|127\.0\.0\.1/.test(t0.name), t0.name);
+const upstreamPort = new URL(process.env.MOCK_BASE ?? 'http://127.0.0.1:18899').port;
+check(
+  '工具名不暴露上游',
+  !t0.name.includes(upstreamPort) && !t0.name.includes('127_0_0_1'),
+  t0.name,
+);
 check('工具含 inputSchema', Boolean(t0.inputSchema?.properties !== undefined));
 
 section('3. 新建令牌 → 走网关');

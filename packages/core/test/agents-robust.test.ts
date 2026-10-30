@@ -1,3 +1,7 @@
+﻿// 测试用假上游/桩模型在本机回环：显式打开私网出网（生产默认关闭）
+process.env.ALLOW_PRIVATE_EGRESS = 'true';
+process.env.LLM_ALLOW_PRIVATE = 'true';
+
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, type Server } from 'node:http';

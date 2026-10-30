@@ -1,3 +1,6 @@
+﻿// 测试用假上游在本机回环：显式打开私网出网开关（生产默认关闭）
+process.env.ALLOW_PRIVATE_EGRESS = 'true';
+
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, type Server } from 'node:http';
@@ -77,7 +80,7 @@ test('fetchSiteInfo：抓到标题和图标', async () => {
   await listen(
     '<html><head><title>商品中心 API</title><link rel="icon" href="/f.ico"></head><body></body></html>',
   );
-  const info = await fetchSiteInfo(`http://127.0.0.1:${port}`);
+  const info = await fetchSiteInfo(`http://127.0.0.1:${port}`, true);
   await close();
   assert.equal(info.title, '商品中心 API');
   assert.equal(info.icon, '/f.ico');
@@ -86,7 +89,7 @@ test('fetchSiteInfo：抓到标题和图标', async () => {
 
 test('fetchSiteInfo：非 HTML 首页不报错，返回说明', async () => {
   await listen('{"ok":true}', { ct: 'application/json' });
-  const info = await fetchSiteInfo(`http://127.0.0.1:${port}`);
+  const info = await fetchSiteInfo(`http://127.0.0.1:${port}`, true);
   await close();
   assert.equal(info.title, '');
   assert.match(info.error ?? '', /不是 HTML/);
@@ -94,7 +97,7 @@ test('fetchSiteInfo：非 HTML 首页不报错，返回说明', async () => {
 
 test('fetchSiteInfo：404 不抛异常', async () => {
   await listen('nope', { status: 404 });
-  const info = await fetchSiteInfo(`http://127.0.0.1:${port}`);
+  const info = await fetchSiteInfo(`http://127.0.0.1:${port}`, true);
   await close();
   assert.equal(info.title, '');
   assert.match(info.error ?? '', /404/);
@@ -114,7 +117,7 @@ test('fetchSiteInfo：非法 baseUrl 不抛异常', async () => {
 
 test('fetchSiteInfo：没有 title 时保留 icon', async () => {
   await listen('<html><head><link rel="icon" href="/only.ico"></head></html>');
-  const info = await fetchSiteInfo(`http://127.0.0.1:${port}`);
+  const info = await fetchSiteInfo(`http://127.0.0.1:${port}`, true);
   await close();
   assert.equal(info.title, '');
   assert.equal(info.icon, '/only.ico');
@@ -150,7 +153,7 @@ test('fetchSiteInfo：跟随同站跳转（相对路径）', async () => {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     res.end('<html><head><title>跳转后的站点</title></head></html>');
   });
-  const info = await fetchSiteInfo(`http://127.0.0.1:${hopPort}`);
+  const info = await fetchSiteInfo(`http://127.0.0.1:${hopPort}`, true);
   await closeHop();
   assert.equal(info.title, '跳转后的站点');
   assert.equal(info.error, undefined);
@@ -166,7 +169,7 @@ test('fetchSiteInfo：跟随同站绝对地址跳转', async () => {
     res.writeHead(200, { 'Content-Type': 'text/html' });
     res.end('<title>绝对跳转</title>');
   });
-  const info = await fetchSiteInfo(`http://127.0.0.1:${hopPort}`);
+  const info = await fetchSiteInfo(`http://127.0.0.1:${hopPort}`, true);
   await closeHop();
   assert.equal(info.title, '绝对跳转');
 });
@@ -176,7 +179,7 @@ test('fetchSiteInfo：不跟随到其他域', async () => {
     res.writeHead(302, { Location: 'http://evil.example.com/steal' });
     res.end();
   });
-  const info = await fetchSiteInfo(`http://127.0.0.1:${hopPort}`);
+  const info = await fetchSiteInfo(`http://127.0.0.1:${hopPort}`, true);
   await closeHop();
   assert.equal(info.title, '');
   assert.match(info.error ?? '', /其他域/);
@@ -189,7 +192,7 @@ test('fetchSiteInfo：跳转次数过多会停', async () => {
     res.writeHead(302, { Location: `/hop${n}` });
     res.end();
   });
-  const info = await fetchSiteInfo(`http://127.0.0.1:${hopPort}`);
+  const info = await fetchSiteInfo(`http://127.0.0.1:${hopPort}`, true);
   await closeHop();
   assert.equal(info.title, '');
   assert.match(info.error ?? '', /跳转次数过多/);

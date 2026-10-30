@@ -13,12 +13,26 @@ import {
 } from '../components/Field.tsx';
 import { JsonView } from '../components/JsonView.tsx';
 import { ConfirmDialog, Drawer, Modal } from '../components/Modal.tsx';
+import { ParamsEditor } from '../components/ParamsEditor.tsx';
+import { RowMenu } from '../components/RowMenu.tsx';
 import { DataTable } from '../components/Table.tsx';
 import type { Column } from '../components/Table.tsx';
 import { useToast } from '../components/Toast.tsx';
 import { formatMs, formatTime, parseJsonOr, splitList } from '../format.ts';
-import { bumpData, errorMessage, useDataRev, useResource } from '../hooks.ts';
-import { ENDPOINT_STATUSES, EXPOSURES, EXPOSURE_HINT, EXPOSURE_LABEL, HTTP_METHODS } from '../types.ts';
+import { bumpData, errorMessage, readHashQuery, useDataRev, usePlatforms, useResource } from '../hooks.ts';
+import {
+  ENDPOINT_STATUSES,
+  ENDPOINT_STATUS_LABEL,
+  EXPOSURES,
+  EXPOSURE_HINT,
+  EXPOSURE_LABEL,
+  HTTP_METHODS,
+  PARAM_LOCATIONS,
+  PARAM_LOCATION_LABEL,
+  PARAM_TYPES,
+  SENSITIVITY_LABEL,
+  SIDE_EFFECT_LABEL,
+} from '../types.ts';
 import type {
   ApiKey,
   Endpoint,
@@ -74,7 +88,7 @@ function emptyForm(platformId: string): EndpointFormState {
     slug: '',
     group: 'default',
     method: 'GET',
-    pathTemplate: '/',
+    pathTemplate: '',
     summary: '',
     description: '',
     sideEffect: 'read',
@@ -190,12 +204,21 @@ function buildInput(form: EndpointFormState): {
 export function EndpointsPage() {
   const toast = useToast();
   const rev = useDataRev();
-  const platforms = useResource(() => api.platforms.list(), [rev]);
+  const platforms = usePlatforms();
 
   const [platformId, setPlatformId] = useState('');
   const [status, setStatus] = useState<EndpointStatus | ''>('');
   const [qInput, setQInput] = useState('');
   const [q, setQ] = useState('');
+
+  // 支持从别的页面跳过来带搜索词，例如 #/endpoints?q=query_orders
+  useEffect(() => {
+    const preset = readHashQuery('q').trim();
+    if (preset) {
+      setQInput(preset);
+      setQ(preset);
+    }
+  }, []);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setQ(qInput.trim()), 350);
@@ -240,6 +263,41 @@ export function EndpointsPage() {
   const [testResult, setTestResult] = useState<EndpointTestResult | null>(null);
   const [testError, setTestError] = useState<string | null>(null);
 
+  // ── 批量操作 ──
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [bulkBusy, setBulkBusy] = useState(false);
+
+  const runBulk = async (action: 'publish' | 'archive') => {
+    const targets = (endpoints.data ?? []).filter(
+      (item) => selectedIds.includes(item.id) && (action === 'publish' || item.status !== 'archived'),
+    );
+    if (targets.length === 0) {
+      toast.error('先勾选要处理的接口');
+      return;
+    }
+    setBulkBusy(true);
+    let ok = 0;
+    const failed: string[] = [];
+    for (const item of targets) {
+      try {
+        if (action === 'publish') await api.endpoints.publish(item.id, '批量发布');
+        else await api.endpoints.archive(item.id);
+        ok += 1;
+      } catch (err) {
+        failed.push(`${item.slug}：${errorMessage(err)}`);
+      }
+    }
+    setBulkBusy(false);
+    setSelectedIds([]);
+    endpoints.reload();
+    bumpData();
+    if (failed.length === 0) {
+      toast.success(`${action === 'publish' ? '发布' : '归档'}成功 ${ok} 个`);
+    } else {
+      toast.error(`${ok} 个成功，${failed.length} 个失败：${failed[0]}`);
+    }
+  };
+
   const openCreate = () => {
     const firstPlatform = platforms.data?.[0];
     setEditing('new');
@@ -252,6 +310,25 @@ export function EndpointsPage() {
     setForm(toForm(endpoint));
     setErrors({});
   };
+
+  // 支持 #/endpoints?edit=<id>：从别处跳过来直接打开这个接口的编辑抽屉
+  useEffect(() => {
+    const targetId = readHashQuery('edit').trim();
+    if (!targetId) return;
+    let alive = true;
+    api.endpoints
+      .get(targetId)
+      .then((endpoint) => {
+        if (alive) openEdit(endpoint);
+      })
+      .catch(() => {
+        /* 接口被删了或没权限，静默忽略 */
+      });
+    return () => {
+      alive = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const patchForm = (patch: Partial<EndpointFormState>) => {
     setForm((prev) => ({ ...prev, ...patch }));
@@ -393,6 +470,14 @@ export function EndpointsPage() {
           <span className="mono ellipsis" title={row.pathTemplate}>
             {row.pathTemplate}
           </span>
+          {row.sideEffect === 'write' && ['GET', 'HEAD', 'OPTIONS'].includes(row.method) ? (
+            <Badge
+              tone="orange"
+              title={`读写属性是「写」，方法却是 ${row.method}：AI 会当成只读工具去调用。改成 POST/PUT/PATCH/DELETE 才能发布。`}
+            >
+              方法冲突
+            </Badge>
+          ) : null}
         </div>
       ),
     },
@@ -433,8 +518,9 @@ export function EndpointsPage() {
     },
     {
       key: 'actions',
+      sortable: false,
       title: '操作',
-      width: '300px',
+      width: '190px',
       align: 'right',
       render: (row) => (
         <div className="row-actions">
@@ -444,27 +530,28 @@ export function EndpointsPage() {
           <button type="button" className="btn sm ghost" onClick={() => openEdit(row)}>
             编辑
           </button>
-          <button
-            type="button"
-            className="btn sm ghost"
-            onClick={() => {
-              setPublishTarget(row);
-              setPublishNote('');
-            }}
-          >
-            发布
-          </button>
-          <button
-            type="button"
-            className="btn sm ghost"
-            disabled={row.status === 'archived'}
-            onClick={() => setArchiveTarget(row)}
-          >
-            归档
-          </button>
-          <button type="button" className="btn sm danger-ghost" onClick={() => setDeleteTarget(row)}>
-            删除
-          </button>
+          <RowMenu
+            items={[
+              {
+                label: row.status === 'published' ? '重新发布' : '发布',
+                onClick: () => {
+                  setPublishTarget(row);
+                  setPublishNote('');
+                },
+              },
+              {
+                label: '归档',
+                disabled: row.status === 'archived',
+                hint: row.status === 'archived' ? '已经是归档状态' : undefined,
+                onClick: () => setArchiveTarget(row),
+              },
+              {
+                label: '删除',
+                danger: true,
+                onClick: () => setDeleteTarget(row),
+              },
+            ]}
+          />
         </div>
       ),
     },
@@ -592,7 +679,7 @@ export function EndpointsPage() {
             <option value="">全部状态</option>
             {ENDPOINT_STATUSES.map((item) => (
               <option key={item} value={item}>
-                {item}
+                {ENDPOINT_STATUS_LABEL[item]}
               </option>
             ))}
           </Select>
@@ -635,6 +722,33 @@ export function EndpointsPage() {
         </div>
       </section>
 
+      {selectedIds.length > 0 ? (
+        <div className="bulk-bar">
+          <span className="bulk-bar-count">已选 {selectedIds.length} 个接口</span>
+          <div className="bulk-bar-actions">
+            <button
+              type="button"
+              className="btn sm primary"
+              disabled={bulkBusy}
+              onClick={() => void runBulk('publish')}
+            >
+              {bulkBusy ? '处理中…' : '批量发布'}
+            </button>
+            <button
+              type="button"
+              className="btn sm ghost"
+              disabled={bulkBusy}
+              onClick={() => void runBulk('archive')}
+            >
+              批量归档
+            </button>
+            <button type="button" className="btn sm ghost" onClick={() => setSelectedIds([])}>
+              取消选择
+            </button>
+          </div>
+        </div>
+      ) : null}
+
       {endpoints.error ? (
         <ErrorBox message={endpoints.error} onRetry={endpoints.reload} />
       ) : (
@@ -645,6 +759,11 @@ export function EndpointsPage() {
             rowKey={(row) => row.id}
             loading={endpoints.loading}
             renderExpanded={renderExpanded}
+            pageSize={20}
+            defaultSort={{ key: 'updatedAt', dir: 'desc' }}
+            selectable
+            selectedKeys={selectedIds}
+            onSelectionChange={setSelectedIds}
             empty={
               <Empty
                 title="还没有接口资产"
@@ -703,7 +822,7 @@ export function EndpointsPage() {
               mono
               value={form.slug}
               onChange={(event) => patchForm({ slug: event.target.value })}
-              placeholder="list_users"
+              placeholder="例如：list_users"
             />
           </Field>
           <Field label="分组">
@@ -730,7 +849,7 @@ export function EndpointsPage() {
               mono
               value={form.pathTemplate}
               onChange={(event) => patchForm({ pathTemplate: event.target.value })}
-              placeholder="/v1/users/{id}"
+              placeholder="例如：/v1/users/{id}"
             />
           </Field>
           <Field label="summary" span>
@@ -740,13 +859,13 @@ export function EndpointsPage() {
               placeholder="一句话说明这个接口做什么"
             />
           </Field>
-          <Field label="读写属性">
+          <Field label="读写属性" hint="写操作不会被 AI 自动试运行">
             <Select
               value={form.sideEffect}
               onChange={(event) => patchForm({ sideEffect: event.target.value as SideEffect })}
             >
-              <option value="read">read</option>
-              <option value="write">write</option>
+              <option value="read">{SIDE_EFFECT_LABEL.read}</option>
+              <option value="write">{SIDE_EFFECT_LABEL.write}</option>
             </Select>
           </Field>
           <Field label="敏感度">
@@ -754,9 +873,9 @@ export function EndpointsPage() {
               value={form.sensitivity}
               onChange={(event) => patchForm({ sensitivity: event.target.value as Sensitivity })}
             >
-              <option value="low">low</option>
-              <option value="medium">medium</option>
-              <option value="high">high</option>
+              <option value="low">{SENSITIVITY_LABEL.low}</option>
+              <option value="medium">{SENSITIVITY_LABEL.medium}</option>
+              <option value="high">{SENSITIVITY_LABEL.high}</option>
             </Select>
           </Field>
           <Field label="tags" hint="逗号分隔" span>
@@ -775,7 +894,7 @@ export function EndpointsPage() {
               mono
               value={form.publicName}
               onChange={(event) => patchForm({ publicName: event.target.value })}
-              placeholder="query_user"
+              placeholder="例如：query_user"
             />
           </Field>
           <Field label="开放策略" hint={EXPOSURE_HINT[form.exposure]} span>
@@ -833,15 +952,13 @@ export function EndpointsPage() {
               onChange={(event) => patchForm({ description: event.target.value })}
             />
           </Field>
-          <Field label="params（JSON 数组）" error={errors.params} span>
-            <JsonEditor
+          <div className="span-2">
+            <ParamsEditor
               value={form.params}
-              rows={7}
               error={errors.params}
               onChange={(next) => patchForm({ params: next })}
-              placeholder={`[{"name":"id","in":"path","type":"string","required":true,"description":"用户 ID"}]`}
             />
-          </Field>
+          </div>
           <Field label="body（JSON 或 null）" error={errors.body} span>
             <JsonEditor
               value={form.body}

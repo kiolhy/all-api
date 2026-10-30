@@ -14,6 +14,7 @@ import type { StepPatch } from '../agents/index.ts';
 import { fetchSiteInfo, hostToName } from './site.ts';
 import { classify, dedupeKey, uniqueSlug } from './dedupe.ts';
 import { compileTool } from '../tools/compile.ts';
+import { hubError } from '../invoke/guard.ts';
 
 export type ImportOptions = {
   text: string;
@@ -196,7 +197,9 @@ export async function runImport(opts: ImportOptions): Promise<ImportOutcome> {
           const d = drafts.find((x) => x.platformSlug === slug)!;
           const existing = platforms.bySlug(slug);
           const baseUrl = existing?.baseUrl ?? d.platformBaseUrl;
-          return [slug, await fetchSiteInfo(baseUrl)] as const;
+          // 只有该平台已被授权访问私网时才允许抓私网首页
+          const allowPrivate = Boolean(existing?.allowPrivate);
+          return [slug, await fetchSiteInfo(baseUrl, allowPrivate)] as const;
         }),
       );
       for (const [slug, info] of results) siteInfoBySlug.set(slug, info);
@@ -231,7 +234,12 @@ export async function runImport(opts: ImportOptions): Promise<ImportOutcome> {
         defaultHeaders: {},
         egressAllowHosts: [safeHost(d.platformBaseUrl)],
         rateLimit: { qps: 5, daily: 10000 },
-        allowPrivate: isLocalHost(safeHost(d.platformBaseUrl)),
+        // 自动创建的平台**不允许**访问私网。
+        //
+        // 真实事故：整理一段 `curl http://127.0.0.1:8778/...` 就会自动建出
+        // allowPrivate=true 的平台并抓标题 —— 「一键整理」本身成了 SSRF 入口。
+        // 需要内网平台的场景，由管理员在平台页显式打开（且受服务端策略约束）。
+        allowPrivate: false,
         notes: '自动创建于一键整理',
       });
       if (info?.title || info?.icon) platforms.setSiteInfo(created.id, info.title, info.icon);
@@ -416,7 +424,25 @@ export function rejectCandidate(candidateId: string): void {
   importJobs.setCandidateDecision(candidateId, 'reject');
 }
 
+/**
+ * 发布前的形态校验：读写下不去手的情况直接拦掉。
+ * 典型场景：接口标成「写」但方法还是 GET，AI 侧会当成只读工具去调用。
+ */
+export function assertPublishable(endpoint: Pick<EndpointRecord, 'slug' | 'method' | 'sideEffect'>): void {
+  const safeMethod = endpoint.method === 'GET' || endpoint.method === 'HEAD' || endpoint.method === 'OPTIONS';
+  if (endpoint.sideEffect === 'write' && safeMethod) {
+    throw hubError(
+      'inconsistent_side_effect',
+      `接口 ${endpoint.slug}：读写属性是「写」，但请求方法标成了 ${endpoint.method}。写操作必须是 POST / PUT / PATCH / DELETE，改好再发布。`,
+      400,
+    );
+  }
+}
+
 export function publishAndCompile(endpointId: string): EndpointRecord | null {
+  const current = endpoints.get(endpointId);
+  if (!current) return null;
+  assertPublishable(current);
   const published = endpoints.publish(endpointId, '一键整理发布');
   if (!published) return null;
   const platform = platforms.get(published.platformId);
@@ -455,10 +481,6 @@ function safeHost(baseUrl: string): string {
   } catch {
     return '';
   }
-}
-
-function isLocalHost(host: string): boolean {
-  return host === 'localhost' || host === '127.0.0.1' || host === '::1';
 }
 
 function guessBaseUrl(text: string): string | null {

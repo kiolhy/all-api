@@ -1,13 +1,13 @@
 import { useState } from 'react';
-import { accountsApi, ApiError } from '../api.ts';
+import { accountsApi } from '../api.ts';
 import { Badge } from '../components/Badge.tsx';
 import { Empty, ErrorBox } from '../components/Empty.tsx';
-import { Checkbox, Field, Select, TextInput } from '../components/Field.tsx';
+import { Checkbox, Field, FormGrid, Select, TextInput } from '../components/Field.tsx';
 import { DataTable } from '../components/Table.tsx';
 import type { Column } from '../components/Table.tsx';
 import { useToast } from '../components/Toast.tsx';
 import { formatTime } from '../format.ts';
-import { useResource } from '../hooks.ts';
+import { errorMessage, useResource } from '../hooks.ts';
 import type { Account, Role } from '../types.ts';
 
 export function AccountsPage({ me }: { me: Account }) {
@@ -44,7 +44,7 @@ export function AccountsPage({ me }: { me: Account }) {
       setCreating(false);
       reload();
     } catch (err) {
-      setFormError((err as ApiError)?.message ?? '创建失败');
+      setFormError(errorMessage(err));
     } finally {
       setBusy(false);
     }
@@ -56,7 +56,7 @@ export function AccountsPage({ me }: { me: Account }) {
       toast.success(enabled ? '已启用' : '已停用');
       reload();
     } catch (err) {
-      toast.error((err as ApiError)?.message ?? '操作失败');
+      toast.error(errorMessage(err));
     }
   };
 
@@ -66,7 +66,7 @@ export function AccountsPage({ me }: { me: Account }) {
       toast.success('角色已更新');
       reload();
     } catch (err) {
-      toast.error((err as ApiError)?.message ?? '操作失败');
+      toast.error(errorMessage(err));
     }
   };
 
@@ -77,7 +77,7 @@ export function AccountsPage({ me }: { me: Account }) {
       toast.success('已删除');
       reload();
     } catch (err) {
-      toast.error((err as ApiError)?.message ?? '删除失败');
+      toast.error(errorMessage(err));
     }
   };
 
@@ -91,7 +91,7 @@ export function AccountsPage({ me }: { me: Account }) {
       setResetPassword('');
       reload();
     } catch (err) {
-      toast.error((err as ApiError)?.message ?? '重置失败');
+      toast.error(errorMessage(err));
     }
   };
 
@@ -145,6 +145,7 @@ export function AccountsPage({ me }: { me: Account }) {
     },
     {
       key: 'actions',
+      sortable: false,
       title: '',
       width: '200px',
       align: 'right',
@@ -180,47 +181,53 @@ export function AccountsPage({ me }: { me: Account }) {
   ];
 
   return (
-    <div className="page">
-      <div className="page-head">
+    <div>
+      <header className="page-head">
         <div>
           <h1 className="page-title">账号</h1>
-          <p className="page-sub">控制台登录账号。管理员可以创建、停用、重置密码。</p>
+          <div className="page-sub">控制台登录账号。管理员可以创建、停用、重置密码。</div>
         </div>
-        <button type="button" className="btn primary" onClick={() => setCreating((v) => !v)}>
-          {creating ? '取消' : '+ 新建账号'}
-        </button>
-      </div>
+        <div className="page-actions">
+          <button type="button" className="btn primary" onClick={() => setCreating((v) => !v)}>
+            {creating ? '取消' : '+ 新建账号'}
+          </button>
+        </div>
+      </header>
 
       {creating ? (
-        <form className="panel" onSubmit={submitCreate}>
-          <div className="panel-title">新建账号</div>
-          <div className="form-row">
-            <Field label="用户名">
-              <TextInput
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
-                placeholder="2-32 位字母数字"
-                autoFocus
-                spellCheck={false}
-              />
-            </Field>
-            <Field label="初始密码" hint="至少 6 位，不能是纯数字">
-              <TextInput
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                autoComplete="new-password"
-              />
-            </Field>
-            <Field label="角色">
-              <Select value={role} onChange={(e) => setRole(e.target.value as Role)}>
-                <option value="member">成员</option>
-                <option value="admin">管理员</option>
-              </Select>
-            </Field>
+        <form className="card" onSubmit={submitCreate}>
+          <div className="card-head">
+            <div className="card-title">新建账号</div>
           </div>
-          {formError ? <div className="field-error">{formError}</div> : null}
-          <div className="panel-actions">
+          <div className="card-body">
+            <FormGrid>
+              <Field label="用户名">
+                <TextInput
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  placeholder="2-32 位字母数字"
+                  autoFocus
+                  spellCheck={false}
+                />
+              </Field>
+              <Field label="初始密码" hint="至少 6 位，不能是纯数字">
+                <TextInput
+                  type="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  autoComplete="new-password"
+                />
+              </Field>
+              <Field label="角色">
+                <Select value={role} onChange={(e) => setRole(e.target.value as Role)}>
+                  <option value="member">成员</option>
+                  <option value="admin">管理员</option>
+                </Select>
+              </Field>
+            </FormGrid>
+            {formError ? <div className="field-error">{formError}</div> : null}
+          </div>
+          <div className="card-foot">
             <button type="submit" className="btn primary" disabled={busy}>
               {busy ? '创建中…' : '创建'}
             </button>
@@ -229,18 +236,22 @@ export function AccountsPage({ me }: { me: Account }) {
       ) : null}
 
       {resetTarget ? (
-        <form className="panel" onSubmit={submitReset}>
-          <div className="panel-title">重置 {resetTarget.username} 的密码</div>
-          <Field label="新密码" hint="重置后该账号所有已登录会话立即失效">
-            <TextInput
-              type="password"
-              value={resetPassword}
-              onChange={(e) => setResetPassword(e.target.value)}
-              autoFocus
-              autoComplete="new-password"
-            />
-          </Field>
-          <div className="panel-actions">
+        <form className="card" onSubmit={submitReset}>
+          <div className="card-head">
+            <div className="card-title">重置 {resetTarget.username} 的密码</div>
+          </div>
+          <div className="card-body">
+            <Field label="新密码" hint="重置后该账号所有已登录会话立即失效">
+              <TextInput
+                type="password"
+                value={resetPassword}
+                onChange={(e) => setResetPassword(e.target.value)}
+                autoFocus
+                autoComplete="new-password"
+              />
+            </Field>
+          </div>
+          <div className="card-foot">
             <button type="button" className="btn ghost" onClick={() => setResetTarget(null)}>
               取消
             </button>

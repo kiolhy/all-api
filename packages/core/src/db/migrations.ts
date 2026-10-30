@@ -226,4 +226,14 @@ alter table platform add column site_icon text not null default '';
 create index if not exists idx_import_job_created on import_job(created_at);
 `,
   },
+  {
+    version: 6,
+    name: 'audit-actor',
+    sql: `
+-- 审计归因：以前匿名操作在流水里是 api_key_id=null + channel=console，查不到人。
+-- actor 记录已认证主体（account:<id> / key:<id> / admin-token / anonymous）。
+alter table audit_log add column actor text;
+create index if not exists idx_audit_actor on audit_log(actor);
+`,
+  },
 ];

@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
-import { api } from '../api.ts';
+import { authApi, api, setSession } from '../api.ts';
 import { Badge } from '../components/Badge.tsx';
 import { ErrorBox } from '../components/Empty.tsx';
 import { Field, FormGrid, TextInput, Toggle } from '../components/Field.tsx';
 import { useToast } from '../components/Toast.tsx';
-import { formatNumber } from '../format.ts';
-import { errorMessage, useResource } from '../hooks.ts';
+import { formatNumber, formatTime } from '../format.ts';
+import { bumpData, errorMessage, useResource } from '../hooks.ts';
 import type { ApplyUpdateResult, UpdateState } from '../types.ts';
 
 export function SettingsPage() {
@@ -26,6 +26,44 @@ export function SettingsPage() {
   const [applyResult, setApplyResult] = useState<ApplyUpdateResult | null>(null);
 
   const behind = state?.behind ?? 0;
+
+  // ── 修改密码 ──
+  const [oldPassword, setOldPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [pwBusy, setPwBusy] = useState(false);
+  const [pwError, setPwError] = useState('');
+
+  const submitPassword = async () => {
+    setPwError('');
+    if (!oldPassword) {
+      setPwError('请填写当前密码');
+      return;
+    }
+    if (newPassword.length < 6) {
+      setPwError('新密码至少 6 位');
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setPwError('两次输入的新密码不一致');
+      return;
+    }
+    if (newPassword === oldPassword) {
+      setPwError('新密码不能和当前密码相同');
+      return;
+    }
+    setPwBusy(true);
+    try {
+      await authApi.changePassword(oldPassword, newPassword);
+      toast.success('密码已修改，请用新密码重新登录');
+      setSession(null);
+      window.location.hash = '/';
+      window.location.reload();
+    } catch (err) {
+      setPwError(errorMessage(err));
+      setPwBusy(false);
+    }
+  };
 
   useEffect(() => {
     let alive = true;
@@ -119,6 +157,8 @@ export function SettingsPage() {
         toast.success(result?.llm?.enabled ? '设置已保存，LLM 已启用' : '设置已保存');
       }
       settings.reload();
+      // 让概览页等别处跟着刷新 LLM 状态，别一个说已启用一个说未启用
+      bumpData();
     } catch (err) {
       toast.error(errorMessage(err));
     } finally {
@@ -141,14 +181,16 @@ export function SettingsPage() {
     }
   };
 
-  return (    <>
-      <header className="page-head">        <div>
+  return (
+    <>
+      <header className="page-head">
+        <div>
           <h1 className="page-title">设置</h1>
           <div className="page-sub">LLM 用于「一键整理」的补全；出网配置由服务端 env 决定，这里只读</div>
         </div>
         <div className="page-actions">
           <button type="button" className="btn ghost" onClick={() => settings.reload()}>
-            重新加载
+            刷新
           </button>
           <button type="button" className="btn primary" onClick={() => void save()} disabled={saving || settings.loading}>
             {saving ? '保存中…' : '保存'}
@@ -175,6 +217,13 @@ export function SettingsPage() {
           <div className="card-title">LLM</div>
           <div className="card-sub">
             {llm?.apiKeySet ? <Badge tone="green">已配置 apiKey</Badge> : <Badge tone="gray">未配置 apiKey</Badge>}
+            {llm?.updatedAt ? (
+              <span className="dim small">
+                {' '}
+                · 最后修改 {formatTime(llm.updatedAt)}
+                {llm.updatedBy ? ` by ${llm.updatedBy}` : ''}
+              </span>
+            ) : null}
           </div>
         </div>
         <div className="card-body">
@@ -246,6 +295,53 @@ export function SettingsPage() {
           </div>
         </div>
       </section>
+
+      <section className="card">
+        <div className="card-head">
+          <div className="card-title">修改密码</div>
+          <div className="card-sub">改完所有已登录会话立即失效，需要用新密码重新登录</div>
+        </div>
+        <div className="card-body">
+          <FormGrid>
+            <Field label="当前密码" span>
+              <TextInput
+                type="password"
+                value={oldPassword}
+                onChange={(event) => setOldPassword(event.target.value)}
+                autoComplete="current-password"
+              />
+            </Field>
+            <Field label="新密码" hint="至少 6 位">
+              <TextInput
+                type="password"
+                value={newPassword}
+                onChange={(event) => setNewPassword(event.target.value)}
+                autoComplete="new-password"
+              />
+            </Field>
+            <Field label="确认新密码">
+              <TextInput
+                type="password"
+                value={confirmPassword}
+                onChange={(event) => setConfirmPassword(event.target.value)}
+                autoComplete="new-password"
+              />
+            </Field>
+          </FormGrid>
+          {pwError ? <div className="field-error">{pwError}</div> : null}
+        </div>
+        <div className="card-foot">
+          <button
+            type="button"
+            className="btn primary"
+            onClick={() => void submitPassword()}
+            disabled={pwBusy}
+          >
+            {pwBusy ? '提交中…' : '修改密码'}
+          </button>
+        </div>
+      </section>
+
       <section className="card">
         <div className="card-head">
           <div className="card-title">版本与更新</div>

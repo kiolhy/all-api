@@ -1,4 +1,4 @@
-/**
+﻿/**
  * 站点信息抓取
  *
  * 整理接口时，用户往往只给了 curl，平台名字是域名推出来的（比如 `api`、`demo`），
@@ -8,9 +8,14 @@
  * - 只抓 baseUrl 的根路径，不跟随到别的域
  * - 5 秒超时，64KB 上限
  * - 失败静默降级（抓不到就用域名）
- * - 不走 assertEgressAllowed：这是「用户主动要求整理某个站点」的场景，
- *   平台本身也是刚按这个 baseUrl 建的，白名单还没生效
+ * - **走受控出网**：私网/回环/元数据地址一律拒绝。
+ *   真实事故：导入时对 curl 里的 `http://127.0.0.1:8778/...` 自动建平台并抓标题，
+ *   等于「整理接口」这个动作本身就是一次 SSRF。现在这里会直接拒绝私网目标，
+ *   由调用方降级成用域名当名字。
  */
+
+import { safeFetch } from '../security/safe-fetch.ts';
+import { loadConfig } from '../config.ts';
 
 export type SiteInfo = {
   /** 站点标题，如「订单管理系统」 */
@@ -62,36 +67,14 @@ function decodeEntities(s: string): string {
     });
 }
 
-async function readCapped(res: Response, maxBytes: number): Promise<string> {
-  const reader = res.body?.getReader();
-  if (!reader) return '';
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (!value) continue;
-    total += value.byteLength;
-    if (total > maxBytes) {
-      chunks.push(value.subarray(0, Math.max(0, value.byteLength - (total - maxBytes))));
-      break;
-    }
-    chunks.push(value);
-  }
-  const merged = new Uint8Array(chunks.reduce((n, c) => n + c.byteLength, 0));
-  let offset = 0;
-  for (const c of chunks) {
-    merged.set(c, offset);
-    offset += c.byteLength;
-  }
-  return new TextDecoder().decode(merged);
-}
-
 /**
  * 抓站点首页拿标题。
  * 永不抛异常：失败就返回空标题 + error 说明。
+ *
+ * @param allowPrivate 仅当平台已被服务端策略授权访问私网时才为 true。
+ *   默认 false —— 也就是说 `curl http://127.0.0.1:8778/...` 不会再触发抓取。
  */
-export async function fetchSiteInfo(baseUrl: string): Promise<SiteInfo> {
+export async function fetchSiteInfo(baseUrl: string, allowPrivate = false): Promise<SiteInfo> {
   let start: URL;
   try {
     start = new URL(baseUrl);
@@ -99,26 +82,29 @@ export async function fetchSiteInfo(baseUrl: string): Promise<SiteInfo> {
     return { title: '', icon: '', error: 'baseUrl 不是合法地址' };
   }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const cfg = loadConfig();
   try {
     // 最多跟 2 跳，且只跟同站（含 http→https、www 变体），不跟到别的域
     let url = new URL(start.origin + '/');
     for (let hop = 0; hop <= 2; hop++) {
-      const res = await fetch(url.toString(), {
+      const res = await safeFetch(url, {
         method: 'GET',
-        redirect: 'manual',
+        // 自己处理跳转：每一跳都要重新过地址判定，不能交给客户端自动跟
+        allowPrivate: allowPrivate && cfg.allowPrivateEgress,
+        allowHosts: [url.hostname],
+        timeoutMs: TIMEOUT_MS,
+        maxBytes: MAX_BYTES,
         headers: {
           // 有些站点对非浏览器 UA 直接返回 403
           'user-agent':
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36',
           accept: 'text/html,application/xhtml+xml',
         },
-        signal: controller.signal,
       });
 
       if (res.status >= 300 && res.status < 400) {
-        const loc = res.headers.get('location');
+        const locRaw = res.headers['location'];
+        const loc = Array.isArray(locRaw) ? locRaw[0] : locRaw;
         if (!loc) return { title: '', icon: '', error: `站点返回 ${res.status}` };
         let next: URL;
         try {
@@ -137,16 +123,17 @@ export async function fetchSiteInfo(baseUrl: string): Promise<SiteInfo> {
         continue;
       }
 
-      if (!res.ok) {
+      if (res.status < 200 || res.status >= 300) {
         return { title: '', icon: '', error: `站点返回 ${res.status}` };
       }
 
-      const ct = res.headers.get('content-type') ?? '';
+      const ctRaw = res.headers['content-type'];
+      const ct = (Array.isArray(ctRaw) ? ctRaw[0] : ctRaw) ?? '';
       if (!/text\/html|application\/xhtml/i.test(ct)) {
         return { title: '', icon: '', error: `首页不是 HTML（${ct.split(';')[0] || '未知'}）` };
       }
 
-      const html = await readCapped(res, MAX_BYTES);
+      const html = res.text;
       const title = extractTitle(html);
       const icon = extractIcon(html);
 
@@ -155,10 +142,16 @@ export async function fetchSiteInfo(baseUrl: string): Promise<SiteInfo> {
     }
     return { title: '', icon: '', error: '跳转次数过多' };
   } catch (err) {
-    const msg = (err as Error).message;
-    return { title: '', icon: '', error: msg.includes('abort') ? '抓取超时' : msg };
-  } finally {
-    clearTimeout(timer);
+    const e = err as Error & { code?: string };
+    // 出网被拒（私网/白名单）是预期结果，不是"抓取失败"，措辞要能看出来
+    if (e.code === 'egress_private_blocked') {
+      return { title: '', icon: '', error: '目标解析到内网地址，已拒绝抓取' };
+    }
+    if (e.code === 'egress_host_blocked') {
+      return { title: '', icon: '', error: '目标主机不在出网白名单内' };
+    }
+    const msg = e.message;
+    return { title: '', icon: '', error: msg.includes('timeout') ? '抓取超时' : msg };
   }
 }
 

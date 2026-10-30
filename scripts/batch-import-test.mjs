@@ -1,7 +1,10 @@
 /**
  * 一次性导入多个接口的验证：一条粘贴里放多条 curl / 一个 OpenAPI 文档
  */
-const BASE = 'http://127.0.0.1:8778';
+const BASE = process.env.GATEWAY_BASE ?? 'http://127.0.0.1:8778';
+// 假上游地址由 verify.mjs 通过 MOCK_BASE 注入
+// （默认避开 8899：那个端口常被本机软件占用）
+const MOCK = process.env.MOCK_BASE ?? 'http://127.0.0.1:18899';
 let pass = 0, fail = 0;
 const check = (n, c, e = '') => {
   c ? (console.log(`  ✔ ${n}${e ? ' — ' + e : ''}`), pass++) : (console.log(`  ✖ ${n}${e ? ' — ' + e : ''}`), fail++);
@@ -28,11 +31,11 @@ const beforePlatformIds = new Set(
 );
 
 console.log('=== 1. 一条粘贴里放 3 条 curl ===');
-const curls = `curl 'http://127.0.0.1:8899/api/v1/users/42' -H 'accept: application/json'
+const curls = `curl '${MOCK}/api/v1/users/42' -H 'accept: application/json'
 
-curl 'http://127.0.0.1:8899/api/v1/orders?page=2&limit=10' -H 'accept: application/json'
+curl '${MOCK}/api/v1/orders?page=2&limit=10' -H 'accept: application/json'
 
-curl -X POST 'http://127.0.0.1:8899/api/v1/echo' -H 'content-type: application/json' -d '{"hello":"world"}'`;
+curl -X POST '${MOCK}/api/v1/echo' -H 'content-type: application/json' -d '{"hello":"world"}'`;
 
 const run = await j(await fetch(`${BASE}/api/import`, {
   method: 'POST', headers: H,
@@ -55,7 +58,7 @@ console.log('\n=== 2. 一个 OpenAPI 文档带 4 个接口 ===');
 const spec = {
   openapi: '3.0.0',
   info: { title: 'Batch Demo', version: '1.0.0' },
-  servers: [{ url: 'http://127.0.0.1:8899' }],
+  servers: [{ url: MOCK }],
   paths: {
     '/api/v1/users/{id}': { get: { operationId: 'getUser', summary: '查用户', parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'string' } }] } },
     '/api/v1/orders': { get: { operationId: 'listOrders', summary: '订单列表', parameters: [{ name: 'page', in: 'query', schema: { type: 'integer' } }] } },
@@ -92,9 +95,26 @@ const tools = await j(await fetch(`${BASE}/api/tools`, { headers: A }));
 check('工具数增加', tools.length >= 5, `${tools.length} 个工具`);
 const names = tools.map((t) => t.name);
 console.log('     工具名:', names.join(' | '));
-check('名字不含上游痕迹', !names.some((n) => /8899|127_0_0_1/.test(n)), names.filter((n) => /8899|127_0_0_1/.test(n)).join(',') || '干净');
+const upstreamPort = new URL(MOCK).port;
+const leaked = names.filter((n) => n.includes(upstreamPort) || n.includes('127_0_0_1'));
+check('名字不含上游痕迹', leaked.length === 0, leaked.join(',') || '干净');
 
 console.log('\n=== 4. 网关能调到新发布的接口 ===');
+// 一键整理自动创建的平台一律 allowPrivate=false（这是有意的安全默认：
+// 整理一段指向 127.0.0.1 的 curl 不该顺手获得内网访问权）。
+// 验收里的假上游就在本机，所以这里模拟管理员在平台页手动放行。
+const importPfs = (await (await fetch(`${BASE}/api/platforms`, { headers: A })).json()).filter(
+  (p) => p.baseUrl.startsWith(MOCK) && !p.allowPrivate,
+);
+for (const p of importPfs) {
+  const r = await fetch(`${BASE}/api/platforms/${p.id}`, {
+    method: 'PATCH', headers: H,
+    body: JSON.stringify({ allowPrivate: true }),
+  });
+  await r.text();
+}
+if (importPfs.length) console.log(`     已放行 ${importPfs.length} 个本机假上游平台（模拟管理员操作）`);
+
 const key = await j(await fetch(`${BASE}/api/api-keys`, {
   method: 'POST', headers: H, body: JSON.stringify({ label: `batch-${Date.now()}` }),
 }));

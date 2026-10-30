@@ -4,6 +4,7 @@ import { chats, endpoints, tools } from '../db/repos.ts';
 import { chatJson } from '../ai/client.ts';
 import { invokeTool } from '../invoke/engine.ts';
 import { previewOf } from '../invoke/transform.ts';
+import { scrubAll, scrubDeep } from '../invoke/redact.ts';
 
 export type ChatEvent =
   | { type: 'tool_call'; tool: string; args: Record<string, unknown> }
@@ -93,7 +94,7 @@ export async function* runChat(
     const decision = res.value;
     if (decision.action === 'call' && decision.tool) {
       const args = (decision.args ?? {}) as Record<string, unknown>;
-      yield { type: 'tool_call', tool: decision.tool, args };
+      yield { type: 'tool_call', tool: decision.tool, args: scrubDeep(args) as Record<string, unknown> };
       chats.addMessage({
         sessionId,
         role: 'assistant',
@@ -101,8 +102,10 @@ export async function* runChat(
         toolCalls: [{ tool: decision.tool, args }],
       });
 
+      // 对话通道用 'chat'（不是 console）：开放策略照常校验，
+      // 且这个通道解析出的密钥明文不进会话历史 —— 落库前统一 scrubAll。
       const result = await invokeTool(decision.tool, args, 'chat');
-      const preview = previewOf(result.data, 1500);
+      const preview = scrubAll(previewOf(result.data, 1500));
       yield { type: 'tool_result', tool: decision.tool, ok: result.ok, preview };
       chats.addMessage({
         sessionId,
@@ -125,6 +128,8 @@ export async function* runChat(
 
   if (!answer) answer = '（已达到工具调用上限，请补充更明确的问题）';
 
+  // 模型有可能把工具结果里的敏感串原样复述出来，落库前再兜一层
+  answer = scrubAll(answer);
   const messageId = chats.addMessage({ sessionId, role: 'assistant', content: answer });
   const chunks = answer.match(/[\s\S]{1,40}/g) ?? [answer];
   for (const c of chunks) yield { type: 'delta', text: c };

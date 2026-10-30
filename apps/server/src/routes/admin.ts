@@ -1,24 +1,38 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { randomBytes } from 'node:crypto';
+import { isIP } from 'node:net';
 import {
   EndpointInputSchema,
   PlatformInputSchema,
   acceptCandidate,
   accounts,
   apiKeys,
+  assertEgressAllowed,
   audit,
+  buildDryRunView,
   chats,
   compileTool,
+  containsSecretValue,
+  declaredSecretNames,
+  decryptSecret,
+  egressHostsFor,
   endpoints,
   importJobs,
+  issueConsoleGrant,
   loadConfig,
+  assertPublishable,
   ipAllowlistProblem,
   ipAllowed,
+  isValidLlmBaseUrl,
+  knownSecretPlaintexts,
+  nowIso,
   platforms,
   publishAndCompile,
   rejectCandidate,
   runChat,
   runImport,
+  safeFetch,
+  scrubDeep,
   secrets,
   settings,
   sha256,
@@ -26,9 +40,13 @@ import {
   tools,
   encryptSecret,
   fetchSiteInfo,
+  isBlockedV4,
+  isBlockedV6,
+  normalizeObscureIpv4,
 } from '@aah/core';
 import type { AccountRecord, ApiKeyRecord, EndpointInput, PlatformInput, QuotaPeriod } from '@aah/core';
 import { startBackgroundImport, listJobs, getJob, isRunning, onJobEvent } from '../import-runner.ts';
+import { actorOfRequest } from './identity.ts';
 
 /** 业务错误码 → HTTP 状态码 */
 const CODE_STATUS: Record<string, number> = {
@@ -53,6 +71,24 @@ function requireAccount(req: FastifyRequest): AccountRecord {
     const err = new Error('未登录') as Error & { statusCode: number; code: string };
     err.statusCode = 401;
     err.code = 'unauthorized';
+    throw err;
+  }
+  return acc;
+}
+
+/**
+ * 路由级管理员校验。
+ *
+ * app.ts 的规则表已经默认拒绝，但这里再自查一次是刻意的"纵深防御"：
+ * 只要哪天规则表被改错、或者有人新挂了一条绕过规则表的路由，
+ * 管理写接口也不会因此裸奔。真实事故里正是"只靠一层"导致整条链被穿透。
+ */
+function requireAdminAccount(req: FastifyRequest): AccountRecord {
+  const acc = requireAccount(req);
+  if (acc.role !== 'admin') {
+    const err = new Error('需要管理员权限') as Error & { statusCode: number; code: string };
+    err.statusCode = 403;
+    err.code = 'forbidden';
     throw err;
   }
   return acc;
@@ -85,8 +121,20 @@ function normalizeAllowlist(input: unknown): string[] {
   return out;
 }
 
+/** 把 audit 里的 actor（account:xxx / key:xxx）翻成人看得懂的名字 */
+function describeActor(actor: unknown): string | null {
+  if (typeof actor !== 'string' || !actor) return null;
+  const byAccount = /^account:(.+)$/.exec(actor);
+  if (byAccount) {
+    const acc = accounts.get(byAccount[1]!);
+    if (acc) return `${acc.username}（${acc.role === 'admin' ? '管理员' : '成员'}）`;
+  }
+  return actor;
+}
+
 /** 设置页看到的 LLM 视图：不返回 apiKey 明文，只告诉有没有配 */
 function llmView(cfg = loadConfig()) {
+  const meta = settings.get<Record<string, unknown>>('llm', {});
   return {
     enabled: cfg.llm.enabled,
     baseUrl: cfg.llm.baseUrl,
@@ -96,7 +144,97 @@ function llmView(cfg = loadConfig()) {
     concurrency: cfg.llm.concurrency,
     /** 想开但没 apiKey，会提示用户 */
     blockedByApiKey: !cfg.llm.apiKey,
+    /** 谁在什么时候改的：检查期间被别人改掉时能看出来 */
+    updatedAt: typeof meta.updatedAt === 'string' ? meta.updatedAt : null,
+    updatedBy: describeActor(meta.updatedBy),
   };
+}
+
+/**
+ * egress 策略服务端化。
+ *
+ * 真实事故：`allowPrivate` / `egressAllowHosts` 完全由请求体决定，
+ * 匿名者建一个 `baseUrl=http://127.0.0.1:8778` 且 `allowPrivate=true` 的平台，
+ * 就让网关去请求自己 —— 于是"网关能不能进私网"变成了由攻击者配置。
+ *
+ * 现在三层：
+ *   1. `allowPrivate` 只在服务端显式开启（ALLOW_PRIVATE_EGRESS=true）时才可能为真
+ *   2. baseUrl 的 host 若解析到内网/保留地址，在**这块服务端策略**下直接拒绝保存
+ *   3. egressAllowHosts 里出现本地主机名也拒绝（那是"允许去我自己的其它端口"）
+ *
+ * 注意：这里做的是**保存时**的静态检查（字面量 + 明显写法）。
+ * 真正的运行时防护在 safeFetch 的地址级判定（DNS 解析后），
+ * 两者不是替代关系 —— DNS rebinding 只能靠后者。
+ */
+function enforceEgressPolicy<T extends Partial<PlatformInput>>(input: T): T {
+  const cfg = loadConfig();
+  const out: T = { ...input };
+  if (!cfg.allowPrivateEgress) out.allowPrivate = false;
+
+  if (out.baseUrl) {
+    let host = '';
+    try {
+      host = new URL(out.baseUrl).hostname.toLowerCase().replace(/\.+$/, '');
+    } catch {
+      /* 格式错误交给 zod 校验 */
+    }
+    if (host && !out.allowPrivate) {
+      // 字面量 IP / 特殊主机名：在"不允许私网"的策略下不该被保存
+      const bare = host.replace(/^\[|\]$/g, '');
+      const isLocalName =
+        bare === 'localhost' ||
+        bare.endsWith('.localhost') ||
+        bare.endsWith('.local') ||
+        bare.endsWith('.internal') ||
+        bare === '::1' ||
+        bare === '0.0.0.0';
+      const isLocalV4 = normalizeObscureIpv4(bare);
+      if (isLocalName || (isLocalV4 && isBlockedV4(isLocalV4)) || (isIP(bare) === 6 && isBlockedV6(bare))) {
+        throw bad(
+          `平台地址 ${host} 指向本机/内网，当前服务端未允许私网出网（ALLOW_PRIVATE_EGRESS 未开启）`,
+          'egress_private_blocked',
+        );
+      }
+    }
+  }
+
+  if (Array.isArray(out.egressAllowHosts) && !out.allowPrivate) {
+    for (const h of out.egressAllowHosts) {
+      const bare = String(h).trim().toLowerCase().replace(/\.+$/, '');
+      const ipv4 = normalizeObscureIpv4(bare);
+      const blocked =
+        bare === 'localhost' ||
+        bare.endsWith('.localhost') ||
+        bare.endsWith('.local') ||
+        bare.endsWith('.internal') ||
+        (ipv4 && isBlockedV4(ipv4)) ||
+        (isIP(bare) === 6 && isBlockedV6(bare));
+      if (blocked) {
+        throw bad(`出网白名单里不允许出现本机/内网地址：${h}`, 'egress_private_blocked');
+      }
+    }
+  }
+  return out;
+}
+
+/**
+ * 保存接口时校验 `${secret:...}` 只能出现在**声明过**的位置。
+ *
+ * 真实事故：`body.example` 里写 `${secret:任意名字}`，调用时会被无条件解析，
+ * 于是"示例文本"成了"读取任意密钥的通道"。
+ * 现在示例里的引用只是字面量（不会解析），但如果接口还声明了 secretRef，
+ * 这里会顺手校验该密钥确实存在，避免保存后调用才发现配错。
+ */
+function assertNoExampleSecretRefs(input: EndpointInput, platform: PlatformInput | Awaited<ReturnType<typeof platforms.get>>): void {
+  const declared = declaredSecretNames(
+    { ...input, id: '', platformId: '', platformSlug: '', status: 'draft', version: 0, contentHash: '', sourceKind: 'manual', sourceRef: '', createdAt: '', updatedAt: '' } as never,
+    platform as never,
+  );
+  for (const name of declared) {
+    if (!secrets.getCipher(name)) {
+      throw bad(`引用的密钥不存在：${name}`, 'missing_secret');
+    }
+  }
 }
 
 export function registerAdminRoutes(app: FastifyInstance): void {
@@ -116,10 +254,12 @@ export function registerAdminRoutes(app: FastifyInstance): void {
   app.get('/api/platforms', async () => platforms.list());
 
   app.post('/api/platforms', async (req) => {
+    requireAdminAccount(req);
     const parsed = PlatformInputSchema.safeParse(req.body);
     if (!parsed.success) throw bad(parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '));
     if (platforms.bySlug(parsed.data.slug)) throw bad(`平台 slug 已存在：${parsed.data.slug}`);
-    return platforms.create(parsed.data as PlatformInput);
+    // 私网出网策略是服务端策略，不接受客户端声明（真实事故：allowPrivate 由请求体控制）
+    return platforms.create(enforceEgressPolicy(parsed.data as PlatformInput));
   });
 
   app.get('/api/platforms/:id', async (req) => {
@@ -130,55 +270,107 @@ export function registerAdminRoutes(app: FastifyInstance): void {
   });
 
   app.patch('/api/platforms/:id', async (req) => {
+    requireAdminAccount(req);
     const { id } = req.params as { id: string };
     const parsed = PlatformInputSchema.partial().safeParse(req.body);
     if (!parsed.success) throw bad(parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '));
-    const updated = platforms.update(id, parsed.data as Partial<PlatformInput>);
+    const updated = platforms.update(id, enforceEgressPolicy(parsed.data as Partial<PlatformInput>));
     if (!updated) throw bad('平台不存在', 'not_found');
     return updated;
   });
 
   app.delete('/api/platforms/:id', async (req) => {
+    requireAdminAccount(req);
     const { id } = req.params as { id: string };
     platforms.remove(id);
     return { ok: true };
   });
 
+  /**
+   * 平台试运行。
+   *
+   * 真实事故：这个接口按用户可控的 baseUrl 出网，并把上游响应体（含非 2xx）
+   * 原样回显给调用方 —— 匿名 + 编码前缀绕过，就成了全响应 SSRF，
+   * 能读 127.0.0.1:8778 的控制台 HTML、/api/health、/gw/llms.txt。
+   *
+   * 现在：
+   *   1. 只有管理员能调（requireAdminAccount 已加，规则表里也是 admin 级）
+   *   2. 出网走 safeFetch：DNS 解析后按地址判定，私网/回环/元数据一律拒绝
+   *   3. 响应只回结构化摘要，不回正文；非 2xx 连摘要都不给
+   */
   app.post('/api/platforms/:id/test', async (req) => {
+    const me = requireAdminAccount(req);
     const { id } = req.params as { id: string };
     const p = platforms.get(id);
     if (!p) throw bad('平台不存在', 'not_found');
     const started = Date.now();
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 6000);
     try {
-      const res = await fetch(p.baseUrl, {
+      // 走和正式调用一致的出网护栏：白名单 / 私网 / 自引用拦截
+      const target = new URL(p.baseUrl);
+      assertEgressAllowed(p, target, loadConfig().allowPrivateEgress);
+      const res = await safeFetch(p.baseUrl, {
         method: 'GET',
         headers: { Accept: 'application/json', ...p.defaultHeaders },
-        signal: controller.signal,
+        allowPrivate: loadConfig().allowPrivateEgress && p.allowPrivate,
+        allowHosts: egressHostsFor(p),
+        timeoutMs: 6000,
+        maxBytes: 256 * 1024,
       });
-      const text = await res.text();
-      return {
-        ok: res.status < 500,
+      // 审计：试运行是敏感动作，留痕才能回溯"谁在往哪儿打"
+      audit.append({
+        ts: nowIso(),
+        requestId: `op_${randomBytes(8).toString('hex')}`,
+        apiKeyId: null,
+        channel: 'console',
+        actor: `account:${me.id}`,
+        toolName: `platforms/test:${p.slug}`,
+        endpointId: null,
+        status: res.status,
+        ok: res.status >= 200 && res.status < 300,
+        latencyMs: Date.now() - started,
+        upstreamHost: res.host,
+        errorCode: null,
+        reqMeta: { baseUrl: p.baseUrl },
+        respMeta: { bytes: res.bytes },
+      });
+      const view = buildDryRunView({
         status: res.status,
         latencyMs: Date.now() - started,
-        sample: text.slice(0, 300),
-      };
+        upstreamHost: res.host,
+        contentType: String(res.headers['content-type'] ?? ''),
+        text: res.text,
+        bytes: res.bytes,
+        truncated: res.truncated,
+        console: true,
+      });
+      return view;
     } catch (err) {
-      return { ok: false, status: 0, latencyMs: Date.now() - started, sample: (err as Error).message };
-    } finally {
-      clearTimeout(timer);
+      const e = err as Error & { code?: string; status?: number };
+      return {
+        ok: false,
+        status: 0,
+        latencyMs: Date.now() - started,
+        upstreamHost: '',
+        contentType: '',
+        bytes: 0,
+        truncated: false,
+        errorCode: e.code ?? 'upstream_unreachable',
+        // 只说是哪一类问题，不回显任何内网细节
+        hint: e.message,
+      };
     }
   });
 
   /** 重新抓取站点标题（老平台名字还是域名时用） */
   app.post('/api/platforms/:id/refresh-title', async (req) => {
+    requireAdminAccount(req);
     const { id } = req.params as { id: string };
     const p = platforms.get(id);
     if (!p) throw bad('平台不存在', 'not_found');
 
     const body = (req.body ?? {}) as { applyName?: boolean };
-    const info = await fetchSiteInfo(p.baseUrl);
+    // 只有平台被授权访问私网时才允许抓私网首页
+    const info = await fetchSiteInfo(p.baseUrl, p.allowPrivate);
     if (info.title || info.icon) platforms.setSiteInfo(id, info.title, info.icon);
 
     // 默认只在名字还是「占位样」的时候才覆盖，避免冲掉用户手改的名字
@@ -210,6 +402,7 @@ export function registerAdminRoutes(app: FastifyInstance): void {
   });
 
   app.post('/api/endpoints', async (req) => {
+    requireAdminAccount(req);
     const body = req.body as { platformId?: unknown } & Record<string, unknown>;
     const platformId = typeof body.platformId === 'string' ? body.platformId : '';
     if (!platformId) throw bad('platformId 必须是非空字符串');
@@ -218,6 +411,9 @@ export function registerAdminRoutes(app: FastifyInstance): void {
     const parsed = EndpointInputSchema.safeParse(body);
     if (!parsed.success) throw bad(parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '));
     if (endpoints.bySlug(platformId, parsed.data.slug)) throw bad(`该平台下 slug 已存在：${parsed.data.slug}`);
+    assertNoExampleSecretRefs(parsed.data as EndpointInput, platform);
+    // 建完就发布，所以先校验形态，别留下一条发布不了的孤儿草稿
+    assertPublishable(parsed.data);
     const ep = endpoints.create(platformId, parsed.data as EndpointInput, { sourceKind: 'manual' });
     publishAndCompile(ep.id);
     return endpoints.get(ep.id);
@@ -231,21 +427,30 @@ export function registerAdminRoutes(app: FastifyInstance): void {
   });
 
   app.put('/api/endpoints/:id', async (req) => {
+    requireAdminAccount(req);
     const { id } = req.params as { id: string };
     const parsed = EndpointInputSchema.safeParse(req.body);
     if (!parsed.success) throw bad(parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; '));
+    const existing = endpoints.get(id);
+    if (!existing) throw bad('接口不存在', 'not_found');
+    const platform = platforms.get(existing.platformId);
+    if (platform) assertNoExampleSecretRefs(parsed.data as EndpointInput, platform);
+    // 已发布的接口改完就生效，读写属性和方法对不上同样不让存
+    assertPublishable(parsed.data);
     const updated = endpoints.update(id, parsed.data as EndpointInput);
     if (!updated) throw bad('接口不存在', 'not_found');
     return updated;
   });
 
   app.delete('/api/endpoints/:id', async (req) => {
+    requireAdminAccount(req);
     const { id } = req.params as { id: string };
     endpoints.remove(id);
     return { ok: true };
   });
 
   app.post('/api/endpoints/:id/publish', async (req) => {
+    requireAdminAccount(req);
     const { id } = req.params as { id: string };
     const body = (req.body ?? {}) as { note?: string };
     const published = publishAndCompile(id);
@@ -255,6 +460,7 @@ export function registerAdminRoutes(app: FastifyInstance): void {
   });
 
   app.post('/api/endpoints/:id/archive', async (req) => {
+    requireAdminAccount(req);
     const { id } = req.params as { id: string };
     endpoints.setStatus(id, 'archived');
     const tool = tools.byEndpoint(id);
@@ -262,17 +468,29 @@ export function registerAdminRoutes(app: FastifyInstance): void {
     return endpoints.get(id);
   });
 
+  /**
+   * 控制台试运行。
+   *
+   * 以前这个路由没有任何鉴权，而 testEndpoint 硬编码 channel='console'、
+   * assertEndpointAccess 又对 console 无条件放行 —— 匿名者因此可以借网关之手
+   * 解密 vault 里的任意密钥并出网。现在：
+   *   1. 路由本身要求管理员（app.ts 的规则表里 /api/endpoints 已经是 admin 级）
+   *   2. 这里再现场签发一份 console 凭据，让核心层独立校验一次
+   */
   app.post('/api/endpoints/:id/test', async (req) => {
+    const me = requireAdminAccount(req);
     const { id } = req.params as { id: string };
     const body = (req.body ?? {}) as { args?: Record<string, unknown> };
-    const result = await testEndpoint(id, body.args ?? {});
-    return { ...result, data: result.data };
+    const grant = issueConsoleGrant({ id: me.id, role: me.role as 'admin' | 'member' });
+    const result = await testEndpoint(id, body.args ?? {}, grant, `account:${me.id}`);
+    return { ...result, data: scrubDeep(result.data, { secretValues: [] }) };
   });
 
   /* ───────────── 工具 ───────────── */
   app.get('/api/tools', async () => tools.list());
 
   app.patch('/api/tools/:id', async (req) => {
+    requireAdminAccount(req);
     const { id } = req.params as { id: string };
     const tool = tools.get(id);
     if (!tool) throw bad('工具不存在', 'not_found');
@@ -311,7 +529,8 @@ export function registerAdminRoutes(app: FastifyInstance): void {
     });
   });
 
-  app.post('/api/tools/rebuild', async () => {
+  app.post('/api/tools/rebuild', async (req) => {
+    requireAdminAccount(req);
     let rebuilt = 0;
     for (const ep of endpoints.list()) {
       if (ep.status !== 'published') continue;
@@ -346,6 +565,7 @@ export function registerAdminRoutes(app: FastifyInstance): void {
 
   /* ───────────── 一键整理 ───────────── */
   app.post('/api/import', async (req) => {
+    requireAdminAccount(req);
     const body = (req.body ?? {}) as {
       text?: string;
       kind?: string;
@@ -479,16 +699,52 @@ export function registerAdminRoutes(app: FastifyInstance): void {
   app.get('/api/secrets', async () => secrets.list());
 
   app.post('/api/secrets', async (req) => {
+    requireAdminAccount(req);
     const body = (req.body ?? {}) as { name?: string; value?: string; hint?: string };
     if (!body.name || !/^[A-Za-z0-9_.-]+$/.test(body.name)) throw bad('密钥名只能包含字母数字._-');
     if (!body.value) throw bad('密钥值不能为空');
+    if (body.value.includes('${secret:')) throw bad('密钥值里不能再引用其他密钥', 'secret_ref_forbidden');
+    const existed = Boolean(secrets.getCipher(body.name));
     secrets.put(body.name, encryptSecret(body.value), body.hint ?? '');
+    audit.append({
+      ts: new Date().toISOString(),
+      requestId: `op_${randomBytes(8).toString('hex')}`,
+      apiKeyId: null,
+      channel: 'console',
+      actor: actorOfRequest(req),
+      toolName: `secrets/${existed ? 'rotate' : 'create'}:${body.name}`,
+      endpointId: null,
+      status: 200,
+      ok: true,
+      latencyMs: 0,
+      upstreamHost: '',
+      errorCode: null,
+      reqMeta: { name: body.name, rotated: existed },
+      respMeta: {},
+    });
     return { ok: true, name: body.name };
   });
 
   app.delete('/api/secrets/:name', async (req) => {
+    requireAdminAccount(req);
     const { name } = req.params as { name: string };
     secrets.remove(name);
+    audit.append({
+      ts: new Date().toISOString(),
+      requestId: `op_${randomBytes(8).toString('hex')}`,
+      apiKeyId: null,
+      channel: 'console',
+      actor: actorOfRequest(req),
+      toolName: `secrets/delete:${name}`,
+      endpointId: null,
+      status: 200,
+      ok: true,
+      latencyMs: 0,
+      upstreamHost: '',
+      errorCode: null,
+      reqMeta: { name },
+      respMeta: {},
+    });
     return { ok: true };
   });
 
@@ -657,11 +913,11 @@ export function registerAdminRoutes(app: FastifyInstance): void {
     };
 
     // 首帧：最近若干条，避免打开是空白
-    send({ type: 'snapshot', records: audit.list({ limit: 20 }) });
+    send({ type: 'snapshot', records: scrubDeep(audit.list({ limit: 20 })) });
 
     const off = audit.subscribe((rec) => {
       // 控制台视图，和 GET /api/audit 一致：保留 upstreamHost 方便排查
-      send({ type: 'record', record: rec });
+      send({ type: 'record', record: scrubDeep(rec) });
     });
 
     const heartbeat = setInterval(() => {
@@ -686,8 +942,10 @@ export function registerAdminRoutes(app: FastifyInstance): void {
   });
 
   app.get('/api/audit', async (req) => {
+    requireAdminAccount(req);
     const q = req.query as { limit?: string; tool?: string };
-    return audit.list({ limit: q.limit ? Number(q.limit) : 100, tool: q.tool });
+    // 审计出口统一脱敏：errorCode/message 里可能夹带上游回显的密钥
+    return scrubDeep(audit.list({ limit: q.limit ? Number(q.limit) : 100, tool: q.tool }));
   });
 
   app.get('/api/settings', async () => {
@@ -703,6 +961,7 @@ export function registerAdminRoutes(app: FastifyInstance): void {
   });
 
   app.put('/api/settings', async (req) => {
+    requireAdminAccount(req);
     const body = (req.body ?? {}) as {
       llm?: {
         enabled?: boolean;
@@ -715,6 +974,12 @@ export function registerAdminRoutes(app: FastifyInstance): void {
         concurrency?: number;
       };
     };
+    // LLM 的 apiKey 会被原样作为 Authorization 头发出去。
+    // baseUrl 必须是受信主机，否则"改配置"就等于"把 key 送人"。
+    if (body.llm?.baseUrl !== undefined) {
+      const problem = isValidLlmBaseUrl(body.llm.baseUrl);
+      if (problem) throw bad(problem, 'invalid_base_url');
+    }
     const current = settings.get<Record<string, unknown>>('llm', {});
     const next = { ...current, ...(body.llm ?? {}) } as Record<string, unknown>;
     // apiKey 留空表示「不修改」：保留已存的，不要删掉
@@ -730,33 +995,80 @@ export function registerAdminRoutes(app: FastifyInstance): void {
     } else {
       delete next.apiKey;
     }
-    settings.set('llm', next);
+    settings.set('llm', {
+      ...next,
+      updatedAt: new Date().toISOString(),
+      updatedBy: actorOfRequest(req),
+    });
+    audit.append({
+      ts: new Date().toISOString(),
+      requestId: `op_${randomBytes(8).toString('hex')}`,
+      apiKeyId: null,
+      channel: 'console',
+      actor: actorOfRequest(req),
+      toolName: 'settings/update',
+      endpointId: null,
+      status: 200,
+      ok: true,
+      latencyMs: 0,
+      upstreamHost: '',
+      errorCode: null,
+      reqMeta: { baseUrl: next.baseUrl, model: next.model, apiKeyChanged: Boolean(incoming) || Boolean(body.llm?.clearApiKey) },
+      respMeta: {},
+    });
     return { ok: true, llm: llmView() };
   });
 
   /* ───────────── 站内对话 ───────────── */
+
+  /**
+   * 会话标题/消息是"可回读的持久化文本"。
+   *
+   * 真实事故：服务端把解析后的密钥明文 POST 进会话标题落库，
+   * 再用 GET 列表读回来 —— 写侧无校验、读侧无脱敏，脱敏彻底失效。
+   * 现在两侧都堵：
+   *   - 写侧：拒绝含已知密钥明文的文本
+   *   - 读侧：统一 scrubDeep（明文 + 指纹 + 通用模式）
+   */
+  const secretRefusal = (text: string): void => {
+    const hit = containsSecretValue(text, knownSecretPlaintexts());
+    if (hit) throw bad('内容包含密钥明文，已拒绝写入', 'secret_value_forbidden');
+  };
+
   app.post('/api/chat/sessions', async (req) => {
+    requireAccount(req);
     const body = (req.body ?? {}) as { title?: string };
-    return chats.createSession(body.title || '新会话');
+    const rawTitle = typeof body.title === 'string' ? body.title : '';
+    if (rawTitle.length > 200) throw bad('会话标题最多 200 字');
+    const title = scrubDeep(rawTitle);
+    secretRefusal(title);
+    return chats.createSession(title || '新会话');
   });
 
-  app.get('/api/chat/sessions', async () => chats.listSessions());
+  app.get('/api/chat/sessions', async (req) => {
+    requireAccount(req);
+    return scrubDeep(chats.listSessions());
+  });
 
   app.get('/api/chat/sessions/:id/messages', async (req) => {
+    requireAccount(req);
     const { id } = req.params as { id: string };
-    return chats.listMessages(id);
+    return scrubDeep(chats.listMessages(id));
   });
 
   app.delete('/api/chat/sessions/:id', async (req) => {
+    requireAccount(req);
     const { id } = req.params as { id: string };
     chats.removeSession(id);
     return { ok: true };
   });
 
   app.post('/api/chat/sessions/:id/messages', async (req, reply) => {
+    requireAccount(req);
     const { id } = req.params as { id: string };
     const body = (req.body ?? {}) as { content?: string };
     if (!body.content?.trim()) throw bad('消息不能为空');
+    secretRefusal(body.content);
     const session = chats.getSession(id);
     if (!session) throw bad('会话不存在', 'not_found');
 
@@ -769,7 +1081,7 @@ export function registerAdminRoutes(app: FastifyInstance): void {
     });
 
     const send = (obj: unknown) => {
-      reply.raw.write(`data: ${JSON.stringify(obj)}\n\n`);
+      reply.raw.write(`data: ${JSON.stringify(scrubDeep(obj))}\n\n`);
     };
 
     try {
