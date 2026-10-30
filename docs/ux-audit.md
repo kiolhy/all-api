@@ -344,3 +344,72 @@ AI 起错名字（比如 `list_orders_2`），只能先「采纳」，再跳到�
 
 - 整理记录里那条 2026-10-30 10:38:30 的历史记录本身没有被删（那是线上库里的旧数据），只修了「done 却显示 0%」的展示；线上用 `npm run cleanup:test:apply` 可以清掉探测残留。
 - 平台 / 接口 / 密钥 / 令牌表单目前是「示例文案加前缀 + 关键字段置空 + 必填校验」，没有做成完全空白的空表单，因为 qps / daily / quota 这些字段有服务端默认值，清空反而要多一轮解释。
+## 第四轮：把「先修」里没到底的几项做到底
+
+第一轮改完还剩几个「看着修了、根子没动」的地方，这轮补上。
+
+### 整理记录「完成却 0%」——根因在 finish()
+
+以前 `importJobs.finish()` 只写 `status`，`steps` 和 `progress` 保持原样。最后一个步骤
+（AI 分析或 AI 命名）超时没跑完时，`steps` 里就挂着 `running` / `pending`，
+`progress` 停在 50% 以下，于是出现「状态 done、进度 0%（或 50%）」。
+
+现在收尾时统一落定：`running` / `pending` 一律改写成 `skipped`（done 收尾）或
+`failed`（其它收尾），`status=done` 时 `progress` 直接写 100。
+
+新增 `scripts/check-job-progress.mjs`（内存库，10 个断言，覆盖正常跑完、最后一步卡住、
+失败收尾三种情况），已接进 `npm run verify`，以后这类回归跑一次就露出来。
+
+### 表单默认值真的清空了
+
+上一轮只给示例文案加了「例如：」前缀，数值还是预填的。这轮：
+
+| 表单 | 之前 | 现在 |
+| --- | --- | --- |
+| 新建平台 qps / daily | `5` / `10000` | 空，留空走服务端默认（实测 `{}` → `qps 5 / daily 10000`） |
+| 新建平台 authConfig / defaultHeaders | `{}` | 空，留空等于 `{}` |
+| 新建接口 body / response | `null` / 一大段默认 JSON | 空，留空回落到默认（JSON、取全量、2MB），字段补了 hint |
+| 新建密钥 额度上限 | `0` | 空，留空即不限，占位写「例如：1000（留空不限）」 |
+
+### 工具开关点一次没反应
+
+根因不是竞态，是 `disabled`：请求进行中把 Toggle 设成禁用，点击被 DOM 直接吞掉，
+所以「点一次没有反转」。现在不再禁用，改 `.toggle-busy` 只做视觉提示，
+点击始终生效，乐观更新，最终以服务端返回为准。
+
+### LLM 配置被别人改掉不能成为默认
+
+`PUT /api/settings` 新增 `expectedUpdatedAt`：和库里存的 `updatedAt` 不一致直接返回
+`409 settings_conflict`，消息是「LLM 配置已被 X 在 Y 改过，你手上的是旧值」。
+设置页的保存和「清除 apiKey」都带上加载时的 `updatedAt`；不传这个字段的调用方
+（脚本、接口直调）行为不变。
+
+实测：`stale null → ok`、`同一个 null 再存 → 409 settings_conflict`、
+`用返回的新 updatedAt 再存 → ok`。
+
+### 验收数据隔离——生产库不再被写脏
+
+这是「102 个平台、58 个接口、失败率 58%」里混进测试残留的根源：`npm run verify`
+以前直接写 `data/hub.db`。
+
+- `scripts/verify.mjs` 默认把 `DB_PATH` 指到 `data/verify-<pid>.db`，跑完删除
+  （`VERIFY_KEEP_DB=1` 保留现场看数据）。
+- 新增 `scripts/verify-seed.mjs`：临时库是空的，而冒烟至少需要一个平台/接口/工具，
+  所以只建假上游那一条 GET 订单列表，幂等。
+- 复用已在运行的网关时明确警告「本次不隔离」，并提示换端口跑
+  （`GATEWAY_PORT=18778 npm run verify`）。
+- `cleanup()` 改成等子进程真的退出——Windows 上句柄没释放就删文件会 EBUSY；
+  删临时库带重试，开跑前顺手扫掉 10 分钟前的残留。
+- `smoke.mjs` 改用 `GATEWAY_BASE`，不再写死 8778。
+
+实测 `npm run verify`：类型检查、整理记录进度、单测 246、前端构建、冒烟、批量导入、
+批量发布预览、AI 链路全绿，且 `data/hub.db` 的 mtime 前后完全没变。
+
+### 还没法从这边关掉的
+
+- **审计失败率里占比最高的几类**：分类、筛选、失败率提示都做了，但具体是哪些原因
+  占大头，只有线上库里有数据，需要按审计页的失败原因标签筛一遍再定。
+- **界面视觉确认**：这个环境读不了截图、也没有浏览器自动化，所有 UI 改动都是靠
+  服务端渲染出的 bundle 字符串、CSS 类存在性、以及真实 API 行为来验证的。
+  菜单和改密弹窗的接线（`mousedown` 命中 `menuRef` 内部不关闭、菜单项 `click` 打开弹窗、
+  `Modal` 在 `open=false` 时返回 `null`）已逐行核对过，但仍需在真机上点一遍确认。
