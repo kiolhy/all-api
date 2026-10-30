@@ -135,7 +135,9 @@ export async function localState(): Promise<UpdateState> {
     git(['rev-parse', 'HEAD']),
     git(['log', '-1', '--format=%s']),
     git(['log', '-1', '--format=%cI']),
-    git(['status', '--porcelain']),
+    // 只看已跟踪文件的改动：未跟踪的文件（草稿、日志、bug.txt 之类）
+    // 不会被 pull 覆盖，拿它们挡住更新等于把在线更新永久禁用。
+    git(['status', '--porcelain', '--untracked-files=no']),
     git(['remote', 'get-url', 'origin']),
   ]);
 
@@ -153,7 +155,9 @@ export async function localState(): Promise<UpdateState> {
   state.hasUpstream = upstream.ok && upstream.out.length > 0;
   state.upstream = state.hasUpstream ? upstream.out : state.branch ? `origin/${state.branch}` : '';
   state.canUpdate = state.isGit && !state.dirty;
-  state.message = state.dirty ? '有未提交的本地改动，更新会覆盖它们' : '尚未检查更新';
+  state.message = state.dirty
+    ? '有未提交的本地改动，更新会覆盖它们'
+    : '已提交，可以检查更新';
   return state;
 }
 
