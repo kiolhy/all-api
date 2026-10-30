@@ -13,7 +13,7 @@ import {
   hubError,
   recordBreaker,
 } from './guard.ts';
-import { redactByKeyName, redactPaths, scrubAll } from './redact.ts';
+import { redactPaths, scrubAll, scrubSecrets } from './redact.ts';
 import { shapeResponse } from './transform.ts';
 
 export type Channel = 'rest' | 'mcp' | 'chat' | 'console';
@@ -248,13 +248,22 @@ export async function invokeEndpoint(req: InvokeRequest): Promise<InvokeResult> 
     let data = parseBody(text, res.headers.get('content-type') ?? '');
     data = shapeResponse(data, endpoint.response);
 
-    // 脱敏：字段级 + 密钥明文 + 通用密钥模式
+    // 上游返回的数据原样交给调用方，不做自动脱敏。
+    //
+    // 之前这里对响应跑了一遍 redactByKeyName：字段名里带 phone / email /
+    // address / idcard / realname 之类就一律打成 ***，调用方拿到的是残缺数据。
+    // 网关的职责是转发，不是替上游改写业务字段。
+    //
+    // 只保留两件必要的：
+    //   1. redactFields —— 接口上显式配了的字段才打码（默认空，用户自己要求才生效）
+    //   2. 网关自己注入的密钥明文万一被上游回显出来，必须挡掉
+    //      只匹配长度 ≥ 8 的密钥，避免把普通数据里的短字符串误打成 ***
     data = redactPaths(data, endpoint.response.redactFields);
-    data = redactByKeyName(data);
-    if (plaintexts.length || typeof data === 'string') {
+    const echoed = plaintexts.filter((v) => typeof v === 'string' && v.length >= 8);
+    if (echoed.length) {
       const json = typeof data === 'string' ? data : JSON.stringify(data);
-      const cleaned = scrubAll(json, plaintexts);
-      data = typeof data === 'string' ? cleaned : safeJsonParse(cleaned, data);
+      const cleaned = scrubSecrets(json, echoed);
+      if (cleaned !== json) data = typeof data === 'string' ? cleaned : safeJsonParse(cleaned, data);
     }
 
     if (endpoint.sideEffect === 'read' && ttl > 0) cacheSet(cacheKey, data, ttl);

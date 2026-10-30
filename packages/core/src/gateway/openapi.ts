@@ -39,7 +39,7 @@ export function buildOpenApiDoc(opts: {
           schema,
         })),
         responses: {
-          '200': { description: '上游返回（已脱敏、已裁剪）' },
+          '200': { description: '上游返回（原样透传；仅在接口上配了 redactFields 时才打码）' },
         },
       },
     };

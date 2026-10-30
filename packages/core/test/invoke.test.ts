@@ -121,17 +121,60 @@ after(async () => {
   closeDb();
 });
 
-test('端到端：带密钥调用上游并脱敏', async () => {
+test('端到端：上游返回的业务字段原样透传，不再打码', async () => {
   const platform = makePlatform();
   const ep = makeUserEndpoint(platform.id);
   publishAndCompile(ep.id);
   const tool = tools.byEndpoint(ep.id)!;
   const result = await invokeTool(tool.name, { userId: '42' }, 'rest');
   assert.equal(result.ok, true, JSON.stringify(result.data));
-  const data = result.data as { data: { name: string; token: string } };
+  const data = result.data as { data: { name: string; email: string; token: string } };
   assert.equal(data.data.name, '用户42');
-  assert.equal(data.data.token, '***');
+  // 以前 email 会因为字段名命中敏感词被打成 ***，token 同理 —— 都是上游的业务字段
+  assert.equal(data.data.email, 'user42@example.com');
+  assert.equal(data.data.token, 'super-secret-token-should-be-redacted');
   assert.equal(result.meta.upstreamHost, '');
+});
+
+test('端到端：网关自己的密钥被上游回显时必须挡住', async () => {
+  const platform = makePlatform('mock_whoami');
+  const ep = endpoints.create(platform.id, {
+    slug: 'whoami',
+    group: 'x',
+    method: 'GET',
+    pathTemplate: '/api/v1/whoami',
+    summary: '',
+    description: '',
+    params: [
+      {
+        name: 'Authorization',
+        in: 'header',
+        type: 'string',
+        required: true,
+        description: '鉴权头，由密钥库自动注入',
+        default: 'Bearer ${secret:mock_authorization}',
+        secretRef: 'mock_authorization',
+      },
+    ] as never,
+    body: null,
+    response: EMPTY_RESPONSE,
+    sideEffect: 'read',
+    sensitivity: 'low',
+    tags: [],
+    examples: [],
+    notes: '',
+    exposure: 'open',
+    allowedKeyIds: [],
+    publicName: '',
+  });
+  publishAndCompile(ep.id);
+  const tool = tools.byEndpoint(ep.id)!;
+  const result = await invokeTool(tool.name, {}, 'rest');
+  assert.equal(result.ok, true, JSON.stringify(result.data));
+  const data = result.data as { auth: string };
+  // 上游把 Authorization 原样吐了回来，其中的 sk-test-token 不能出现在响应里
+  assert.match(data.auth, /\*\*\*/);
+  assert.doesNotMatch(data.auth, /sk-test-token/);
 });
 
 test('控制台通道可见上游主机', async () => {

@@ -23,7 +23,12 @@ export type ProbeOutcome = {
   ok: boolean;
   status: number;
   latencyMs: number;
-  /** 脱敏后的响应样本（JSON 文本，已截断） */
+  /**
+   * 响应样本（JSON 文本，已截断）。
+   * **保留上游原始数据**，只把网关自己注入的密钥明文挡掉；
+   * 业务字段不打码 —— 控制台里要看到真实值。
+   * 发给第三方模型前由 analyze.ts 再对 PII 打码。
+   */
   sample: string;
   /** 顶层字段名，帮助分析 Agent 判断结构 */
   topLevelKeys: string[];

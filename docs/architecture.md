@@ -273,6 +273,33 @@ GET /gw/v1/tools  →
 `scripts/smoke.mjs` 里加了硬检查：`/gw/v1/tools`、`/gw/v1/me`、`/gw/openapi.json`
 三处的标题/描述/备注都不许命中 `/\/api\/|\/v\d+\/|METHOD \//`，且每个入参必须有说明。
 
+#### 上游返回的数据原样透传
+
+早先 `engine.ts` 对每个响应跑了一遍 `redactByKeyName()`：字段名里带
+`phone` / `email` / `address` / `idcard` / `realname` / `birthday` 之类就一律打成 `***`。
+
+```
+上游返回  {"email":"user42@example.com","token":"abc123"}
+调用方拿到 {"email":"***","token":"***"}          ← 网关把业务数据改写了
+```
+
+网关的职责是转发，不是替上游改写业务字段 —— 调用方拿不到真实数据，这个接口就没用了。
+
+现在只保留两件必要的：
+
+| 情况 | 处理 |
+|---|---|
+| 接口上显式配了 `redactFields`（默认空） | 按字段路径打码，**你要求才生效** |
+| 网关自己注入的密钥被上游回显 | 替换成 `***`，只匹配长度 ≥ 8 的密钥值 |
+
+密钥那条是必须的：如果上游把 `Authorization` 原样吐回来，泄露的是**网关自己的凭据**，
+不是上游的业务数据。`fixtures/mock-upstream` 里加了 `/api/v1/whoami` 专门回显请求头，
+`invoke.test.ts` 用它验证这条兜底仍然生效。
+
+探针样本走的是另一条路：**库里存原始值**（控制台要看到真实数据），
+只有发往第三方模型前才在 `analyze.ts` 里对 PII 打码。
+
+
 #### 令牌进不去服务端
 
 接入包在**浏览器里**拼，令牌不会发给任何接口。已有令牌的明文只在创建时显示过一次
@@ -319,7 +346,7 @@ NormalizedDraft[]
 │     对只读接口发一次真实请求，拿真实响应样本
 │     护栏：只碰 GET/HEAD + sideEffect=read；必填参数缺样例值就跳过；
 │           走 assertEgressAllowed（域名白名单 + 私网拦截）；redirect=manual；
-│           超时 + 256KB 上限；响应脱敏后才交给 LLM
+│           超时 + 256KB 上限；样本原样保存，发给 LLM 前再对 PII 打码
 │     ⚠ 4xx/5xx 标记 errorResponse，不当成接口正常返回结构
 │  ↓
 ├─ 2. 分析 Agent  packages/core/src/agents/analyze.ts

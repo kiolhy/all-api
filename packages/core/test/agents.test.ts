@@ -250,14 +250,36 @@ test('探测：超出上限的接口不请求', async () => {
   assert.equal(upstreamHits.length, 2);
 });
 
-test('探测：响应里的手机号被脱敏', async () => {
+test('探测：样本保留上游原始数据，不把手机号打码', async () => {
   const d = draftFrom(`curl 'http://127.0.0.1:${upstreamPort}/v1/orders'`);
   d.endpoint.sideEffect = 'read';
   d.endpoint.params = [];
 
   const stats = await probeDrafts([d], () => platform(), { maxProbes: 5 });
   assert.equal(stats.succeeded, 1);
-  assert.doesNotMatch(stats.outcomes[0]!.sample, /13800001111/);
+  // 控制台里要看真实数据，不能是 ***
+  assert.match(stats.outcomes[0]!.sample, /13800001111/);
+});
+
+test('分析：发给模型的样本仍把手机号打码', async () => {
+  const d = draftFrom(`curl 'http://127.0.0.1:${upstreamPort}/v1/orders'`);
+  d.endpoint.params = [];
+
+  await analyzeDrafts(cfg(), [d], [
+    {
+      index: 0,
+      ok: true,
+      status: 200,
+      latencyMs: 12,
+      sample: '{"list":[{"orderId":"A1001","userPhone":"13800001111"}]}',
+      topLevelKeys: ['list'],
+      errorResponse: false,
+    },
+  ]);
+
+  // 样本要发给第三方模型，PII 必须打码
+  assert.doesNotMatch(String(lastLlmPayload), /13800001111/);
+  assert.match(String(lastLlmPayload), /A1001/);
 });
 
 /* ───────────── 分析 Agent ───────────── */

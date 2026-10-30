@@ -52,6 +52,12 @@ export function buildMockUpstream(): FastifyInstance {
 
   app.get('/api/v1/big', async () => ({ data: 'x'.repeat(5000) }));
 
+  // 把请求头原样回显：用来验证「网关自己的密钥被上游回显时必须挡住」
+  app.get('/api/v1/whoami', async (req) => ({
+    auth: req.headers['authorization'] ?? '',
+    echo: req.headers['x-echo'] ?? '',
+  }));
+
   return app;
 }
 

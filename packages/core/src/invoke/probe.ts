@@ -16,7 +16,7 @@ import type { EndpointRecord, Param, PlatformRecord } from '../schema/asset.ts';
 import { buildRequest } from '../invoke/build.ts';
 import { assertEgressAllowed, assertSafePath } from '../invoke/guard.ts';
 import { makeResolver } from '../invoke/engine.ts';
-import { redactByKeyName, scrubAll } from '../invoke/redact.ts';
+import { scrubSecrets } from '../invoke/redact.ts';
 import { loadConfig } from '../config.ts';
 import { safeJsonParse } from '../util/json.ts';
 
@@ -163,12 +163,14 @@ export async function probeEndpoint(input: {
     const { text, truncated } = await readCapped(res, PROBE_MAX_BYTES);
     let body: unknown = safeJsonParse(text, text);
 
-    // 脱敏：字段名 + 密钥明文
-    body = redactByKeyName(body);
-    if (plaintexts.length) {
+    // 样本原样保留（控制台里要看到真实数据），只挡网关自己注入的密钥明文。
+    // 业务字段（手机号/邮箱/地址…）不再打码 —— 那是上游的真实数据。
+    // 发给第三方模型前会在 analyze.ts 里再打一次码。
+    const echoed = plaintexts.filter((v) => typeof v === 'string' && v.length >= 8);
+    if (echoed.length) {
       const json = typeof body === 'string' ? body : JSON.stringify(body);
-      const cleaned = scrubAll(json, plaintexts);
-      body = typeof body === 'string' ? cleaned : safeJsonParse(cleaned, body);
+      const cleaned = scrubSecrets(json, echoed);
+      if (cleaned !== json) body = typeof body === 'string' ? cleaned : safeJsonParse(cleaned, body);
     }
 
     return {

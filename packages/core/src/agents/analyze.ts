@@ -16,6 +16,7 @@ import type { NormalizedDraft } from '../import/types.ts';
 import type { ProbeOutcome } from './probe.ts';
 import { chatJson } from '../ai/client.ts';
 import { looksLikeUpstreamPath } from '../tools/describe.ts';
+import { redactByKeyName } from '../invoke/redact.ts';
 
 /**
  * 宽松 schema。
@@ -134,6 +135,14 @@ export async function analyzeDrafts(
     const batch = drafts.slice(start, start + BATCH);
     const payload = batch.map((d, i) => {
       const probe = probeByIndex.get(start + i);
+      // 样本在库里是原始值（控制台要看真实数据），发给第三方模型前把 PII 打码
+      const forLlm = (s: string): string => {
+        try {
+          return JSON.stringify(redactByKeyName(JSON.parse(s)));
+        } catch {
+          return s;
+        }
+      };
       return {
         i,
         method: d.endpoint.method,
@@ -151,13 +160,13 @@ export async function analyzeDrafts(
           ? probe.errorResponse
             ? {
                 status: probe.status,
-                errorSample: probe.sample,
+                errorSample: forLlm(probe.sample),
                 note: '这是错误响应，不能代表接口正常返回结构，请按路径保守推测',
               }
             : {
                 status: probe.status,
                 topLevelKeys: probe.topLevelKeys,
-                sample: probe.sample,
+                sample: forLlm(probe.sample),
               }
           : probe?.error
             ? { failed: probe.error }
