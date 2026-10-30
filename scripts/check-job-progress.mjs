@@ -7,9 +7,18 @@
  *
  * 跑法：node scripts/check-job-progress.mjs
  */
-// 用内存库，绝不碰 data/hub.db\nprocess.env.DB_PATH = ':memory:';
+// 用内存库，绝不碰 data/hub.db
+process.env.DB_PATH = ':memory:';
 
 const { importJobs } = await import('../packages/core/src/db/repos.ts');
+const { dbPath } = await import('../packages/core/src/db/client.ts');
+
+// 兜底：万一上面那行被改坏了（真发生过——换行写成字面量 \n，整行变成注释，
+// 结果这脚本往生产库里写了 6 条测试记录），这里直接拦下来。
+if (dbPath() !== ':memory:') {
+  console.error(`✖ 这个脚本必须跑在内存库上，当前 DB_PATH=${dbPath()}`);
+  process.exit(1);
+}
 
 let pass = 0;
 let fail = 0;
