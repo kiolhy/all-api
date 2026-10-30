@@ -151,11 +151,17 @@ export async function localState(): Promise<UpdateState> {
 
   const upstream = await git(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}']);
 
+  // run() 会 trim 掉整段输出，所以第一行的前导空格（` M file` 的那个空格）会丢。
+  // 这里统一归一成 "XY path"，前端照着显示就行。
   const lines = (text: string) =>
     text
       .split('\n')
       .map((l) => l.replace(/\s+$/, ''))
-      .filter(Boolean);
+      .filter(Boolean)
+      .map((line) => {
+        const m = /^([MADRCU?!]{1,2})\s+(.+)$/.exec(line.replace(/^\s+/, ''));
+        return m ? `${m[1]} ${m[2]}` : line.trim();
+      });
 
   const state = blank(version, '尚未检查更新');
   state.isGit = true;
