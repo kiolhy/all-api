@@ -111,6 +111,10 @@ export async function nameDrafts(
     stats.named += alreadyDone;
     stats.aiUsed = true;
     for (const d of drafts) {
+      // 只把「已经定下来、这一轮不会再动」的名字算作占用。
+      // 早先这里把 needsNaming 里的草稿也塞了进来，于是分析 Agent 已经
+      // 起好名的接口会跟自己撞名，白得一个 `_2` 后缀。
+      if (needsNaming.includes(d)) continue;
       const name = sanitizeName(d.endpoint.publicName);
       if (name) used.add(name);
     }
@@ -221,6 +225,8 @@ type NamingItem = z.infer<typeof NamingItemSchema>;
 
 /** 模型给的对外描述：有内容且不含上游痕迹才收 */
 function applyDescription(draft: NormalizedDraft, item: NamingItem): void {
+  // 分析 Agent 看过真实响应样本，写出来的描述比命名 Agent 更准，别覆盖它
+  if (draft.endpoint.description.trim()) return;
   const text = (item.description ?? '').trim();
   if (!text) return;
   if (looksLikeUpstreamPath(text)) return;

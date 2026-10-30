@@ -96,6 +96,7 @@ const steps = [
   ['冒烟测试', NODE, ['scripts/smoke.mjs']],
   ['批量导入', NODE, ['scripts/batch-import-test.mjs']],
   ['批量发布预览', NODE, ['scripts/bulk-preview-test.mjs']],
+  ['AI 链路', NODE, ['scripts/ai-e2e-test.mjs']],
 ];
 
 try {

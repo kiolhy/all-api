@@ -19,6 +19,14 @@ const login = await j(await fetch(`${BASE}/api/auth/login`, {
 const A = { authorization: `Bearer ${login.token}` };
 const H = { ...A, 'content-type': 'application/json' };
 
+// 记下跑之前已有的接口/平台，结束时只删这次新增的 —— 不碰用户已有数据
+const beforeIds = new Set(
+  (await (await fetch(`${BASE}/api/endpoints`, { headers: A })).json()).map((e) => e.id),
+);
+const beforePlatformIds = new Set(
+  (await (await fetch(`${BASE}/api/platforms`, { headers: A })).json()).map((p) => p.id),
+);
+
 console.log('=== 1. 一条粘贴里放 3 条 curl ===');
 const curls = `curl 'http://127.0.0.1:8899/api/v1/users/42' -H 'accept: application/json'
 
@@ -100,6 +108,28 @@ check(`调用 ${one.name}`, call.ok === true, String(call.ok));
 console.log('\n=== 5. 清理 ===');
 await fetch(`${BASE}/api/api-keys/${key.id}`, { method: 'DELETE', headers: A }).then((r) => r.text());
 check('删除测试令牌', true);
+
+// 删掉本次导入造出来的接口，让 npm run verify 跑完库跟跑之前一样
+const afterEps = await (await fetch(`${BASE}/api/endpoints`, { headers: A })).json();
+let removed = 0;
+for (const e of afterEps) {
+  if (beforeIds.has(e.id)) continue;
+  await fetch(`${BASE}/api/endpoints/${e.id}`, { method: 'DELETE', headers: A }).then((r) => r.text());
+  removed += 1;
+}
+check(`清理本次导入的 ${removed} 个接口`, true);
+
+// 接口删完后，本次新建且已空的平台也一并删掉
+const leftEps = await (await fetch(`${BASE}/api/endpoints`, { headers: A })).json();
+const pfs = await (await fetch(`${BASE}/api/platforms`, { headers: A })).json();
+let droppedPlatforms = 0;
+for (const p of pfs) {
+  if (beforePlatformIds.has(p.id)) continue;
+  if (leftEps.some((e) => e.platformId === p.id)) continue;
+  await fetch(`${BASE}/api/platforms/${p.id}`, { method: 'DELETE', headers: A }).then((r) => r.text());
+  droppedPlatforms += 1;
+}
+check(`清理本次新建的空平台 ${droppedPlatforms} 个`, true);
 
 console.log(`\n${'='.repeat(46)}`);
 console.log(`通过 ${pass}，失败 ${fail}`);

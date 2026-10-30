@@ -12,6 +12,14 @@ const l = await j(await fetch(`${B}/api/auth/login`, {
 const A = { authorization: `Bearer ${l.token}` };
 const H = { ...A, 'content-type': 'application/json' };
 
+// 记下跑之前已有的接口/平台，结束时只删这次新增的 —— 不碰用户已有数据
+const beforeIds = new Set(
+  (await (await fetch(`${B}/api/endpoints`, { headers: A })).json()).map((e) => e.id),
+);
+const beforePlatformIds = new Set(
+  (await (await fetch(`${B}/api/platforms`, { headers: A })).json()).map((p) => p.id),
+);
+
 // 两条一模一样的 curl + 一条不同的 → 批次内应产生 1 个 conflict
 // 路径带时间戳，保证每次跑都是全新接口，不被上一轮判重干扰
 const tag = Date.now().toString(36);
@@ -60,3 +68,25 @@ console.log(
   pend2.length,
   ok2 ? '✔ 只剩冲突项待处理' : `✖ 期望只剩 ${preview.conflict} 个 conflict`,
 );
+
+// 删掉本次导入造出来的接口，让 npm run verify 跑完库跟跑之前一样
+const afterEps = await (await fetch(`${B}/api/endpoints`, { headers: A })).json();
+let removed = 0;
+for (const e of afterEps) {
+  if (beforeIds.has(e.id)) continue;
+  await fetch(`${B}/api/endpoints/${e.id}`, { method: 'DELETE', headers: A }).then((r) => r.text());
+  removed += 1;
+}
+console.log(`清理本次导入的 ${removed} 个接口`);
+
+// 接口删完后，本次新建且已空的平台也一并删掉
+const leftEps = await (await fetch(`${B}/api/endpoints`, { headers: A })).json();
+const pfs = await (await fetch(`${B}/api/platforms`, { headers: A })).json();
+let dropped = 0;
+for (const p of pfs) {
+  if (beforePlatformIds.has(p.id)) continue;
+  if (leftEps.some((e) => e.platformId === p.id)) continue;
+  await fetch(`${B}/api/platforms/${p.id}`, { method: 'DELETE', headers: A }).then((r) => r.text());
+  dropped += 1;
+}
+console.log(`清理本次新建的空平台 ${dropped} 个`);

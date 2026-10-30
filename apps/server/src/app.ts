@@ -59,12 +59,17 @@ export function buildApp(): FastifyInstance {
     });
   });
 
-  app.get('/api/health', async () => ({
-    ok: true,
-    version: VERSION,
-    llm: { enabled: cfg.llm.enabled, model: cfg.llm.model },
-    auth: 'account',
-  }));
+  app.get('/api/health', async () => {
+    // 每次现读：设置页刚保存的 LLM 配置要立刻反映出来，
+    // 不能拿建 app 时闭包里的那份快照（会一直显示重启前的状态）。
+    const live = loadConfig();
+    return {
+      ok: true,
+      version: VERSION,
+      llm: { enabled: live.llm.enabled, model: live.llm.model },
+      auth: 'account',
+    };
+  });
 
   // 管理 API 鉴权：账号会话（Authorization: Bearer <session token>）
   app.addHook('preHandler', async (req: FastifyRequest, reply: FastifyReply) => {

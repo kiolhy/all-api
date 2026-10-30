@@ -378,6 +378,30 @@ test('命名：模型把上游路径抄回来时，描述和参数说明都不�
   assert.equal(d.endpoint.publicName, 'leaky_tool');
 });
 
+test('命名：分析 Agent 已给的名字不会跟自己撞名', async () => {
+  // 曾经把 needsNaming 里的草稿也塞进 used，于是「自己」和「自己」撞名，
+  // 每个已由分析 Agent 起好名的接口都会白得一个 _2 后缀。
+  const d = draftFrom(`curl 'http://127.0.0.1:${upstreamPort}/v1/orders?page=1'`);
+  d.endpoint.params = [{ name: 'page', in: 'query', type: 'string', required: false, description: '' }];
+  d.endpoint.publicName = 'list_orders';
+
+  const stats = await nameDrafts(cfg(), [d]);
+
+  assert.equal(d.endpoint.publicName, 'list_orders', '不该变成 list_orders_2');
+  assert.equal(stats.renamed.length, 0, stats.renamed.join(','));
+});
+
+test('命名：不覆盖分析 Agent 写的描述', async () => {
+  // 分析 Agent 看过真实响应样本，写得比命名 Agent 准
+  const d = draftFrom(`curl 'http://127.0.0.1:${upstreamPort}/v1/orders?page=1'`);
+  d.endpoint.params = [{ name: 'page', in: 'query', type: 'string', required: false, description: '' }];
+  d.endpoint.description = '按页拉取订单，返回订单号、金额和支付状态。只读，可安全重试。';
+
+  await nameDrafts(cfg(), [d]);
+
+  assert.equal(d.endpoint.description, '按页拉取订单，返回订单号、金额和支付状态。只读，可安全重试。');
+});
+
 test('命名：撞名自动加后缀', async () => {
   const a = draftFrom(`curl 'http://127.0.0.1:${upstreamPort}/v1/orders'`);
   const b = draftFrom(`curl 'http://127.0.0.1:${upstreamPort}/v1/orders2'`);
