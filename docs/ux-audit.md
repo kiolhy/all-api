@@ -413,3 +413,21 @@ AI 起错名字（比如 `list_orders_2`），只能先「采纳」，再跳到�
   服务端渲染出的 bundle 字符串、CSS 类存在性、以及真实 API 行为来验证的。
   菜单和改密弹窗的接线（`mousedown` 命中 `menuRef` 内部不关闭、菜单项 `click` 打开弹窗、
   `Modal` 在 `open=false` 时返回 `null`）已逐行核对过，但仍需在真机上点一遍确认。
+### 整理记录残留也进清理脚本
+
+「整理记录」页里那些跑测试留下的行，光修状态机不会消失，得能删。
+`scripts/cleanup-test-data.mjs` 现在多一段：
+
+- `input_ref` 命中 `CLEANUP_JOB_RE`（默认 `^(check|smoke|batch|ai-e2e|verify)`）的直接删；
+- 其余按 `CLEANUP_JOB_DAYS`（默认 7 天）到期删，`CLEANUP_JOB_DAYS=0` 表示不按天数清；
+- `queued` / `running` 的一律不碰。
+
+本地实测清掉 6 条 `check` 残留，平台 / 接口 / 工具 / 8 个密钥一条没动。
+
+### 一个自己踩的坑（记下来免得再犯）
+
+`check-job-progress.mjs` 里 `process.env.DB_PATH = ':memory:'` 那行的换行，
+用 PowerShell 替换时写成了字面量 `\n`，于是整行变成注释 ——
+脚本实际连的是 `data/hub.db`，往生产库写了 6 条测试记录。
+正好撞上这轮在修的「测试数据混进生产」，所以补了一道断言：
+`dbPath()` 不是 `:memory:` 就立刻退出，不再靠注释保证。
